@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ThicknessMon
+Comment=CD22 Thickness Monitoring System
+Exec=firefox http://localhost:5000
+Icon=/home/linux/Downloads/rajdeep_logo.png
+Terminal=false
+Categories=Application;

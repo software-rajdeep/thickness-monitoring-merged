@@ -1,0 +1,16 @@
+[Unit]
+Description=Thickness Monitor Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=linux
+Group=linux
+WorkingDirectory=/home/linux/final_webapp/backend
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/linux/final_webapp/backend/.venv/bin/python /home/linux/final_webapp/backend/cd22_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

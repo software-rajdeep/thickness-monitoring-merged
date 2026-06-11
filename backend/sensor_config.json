@@ -1,0 +1,23 @@
+{
+    "global_settings": {
+        "stream_rate_hz": 2
+    },
+    "sensor_A": {
+        "alarm_output": "Clamp",
+        "averaging": 64,
+        "output_polarity": "Light_ON",
+        "sampling_period": "500us"
+    },
+    "sensor_B": {
+        "alarm_output": "Clamp",
+        "averaging": 64,
+        "output_polarity": "Light_ON",
+        "sampling_period": "500us"
+    },
+    "sensor_C": {
+        "alarm_output": "Clamp",
+        "averaging": 64,
+        "output_polarity": "Light_ON",
+        "sampling_period": "500us"
+    }
+}
