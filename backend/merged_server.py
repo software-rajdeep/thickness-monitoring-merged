@@ -1058,6 +1058,19 @@ def server_config():
         "thickness_state":    get_thickness_state(),
     }), 200
 
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    """Serve the built React frontend from dist/ directory."""
+    from flask import send_from_directory
+    dist_dir = os.path.join(BASE_DIR, '..', 'dist')
+    if path.startswith('socket.io'):
+        from flask import abort
+        abort(404)
+    if path and os.path.exists(os.path.join(dist_dir, path)):
+        return send_from_directory(dist_dir, path)
+    return send_from_directory(dist_dir, 'index.html')
+
 @app.route('/server/network', methods=['GET', 'POST'])
 def server_network():
     if request.method == 'GET':

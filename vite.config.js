@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Proxy all non-static requests to backend on port 5000
+      // Proxy API requests to backend on port 5000
       '/login':              { target: 'http://localhost:5000', changeOrigin: true },
       '/users':              { target: 'http://localhost:5000', changeOrigin: true },
       '/config':             { target: 'http://localhost:5000', changeOrigin: true },
@@ -16,6 +16,7 @@ export default defineConfig({
       '/download':           { target: 'http://localhost:5000', changeOrigin: true },
       '/db':                 { target: 'http://localhost:5000', changeOrigin: true },
       '/server':             { target: 'http://localhost:5000', changeOrigin: true },
+      '/sensors':            { target: 'http://localhost:5000', changeOrigin: true },
       '/socket.io': {
         target: 'http://localhost:5000',
         changeOrigin: true,
