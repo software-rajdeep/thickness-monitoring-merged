@@ -5,24 +5,39 @@ import { io } from "socket.io-client";
 import Topbar  from "./layout/Topbar";
 import Sidebar from "./layout/Sidebar";
 import Toast   from "./components/Toast";
+import ModeSelection from "./components/ModeSelection";
 
-import LoginPage        from "./pages/LoginPage";
-import DashboardPage    from "./pages/DashboardPage";
-import SensorConfigPage from "./pages/SensorConfigPage";
-import RunModePage      from "./pages/RunModePage";
-import DownloadPage     from "./pages/DownloadPage";
-import BackendPage      from "./pages/BackendPage";
+// Side-by-side mode pages (original)
+import SbsLoginPage        from "./pages/LoginPage";
+import SbsDashboardPage    from "./pages/DashboardPage";
+import SbsSensorConfigPage from "./pages/SensorConfigPage";
+import SbsRunModePage      from "./pages/RunModePage";
+import SbsDownloadPage     from "./pages/DownloadPage";
+import SbsBackendPage      from "./pages/BackendPage";
+
+// Opposite-side mode pages
+import OppLoginPage        from "./pages/opposite/LoginPage";
+import OppDashboardPage    from "./pages/opposite/DashboardPage";
+import OppSensorConfigPage from "./pages/opposite/SensorConfigPage";
+import OppRunModePage      from "./pages/opposite/RunModePage";
+import OppDownloadPage     from "./pages/opposite/DownloadPage";
+import OppBackendPage      from "./pages/opposite/BackendPage";
+
+// Opposite mode layout
+import OppTopbar  from "./layout/opposite/Topbar";
+import OppSidebar from "./layout/opposite/Sidebar";
 
 import { SERVER } from "./constants/config";
 
 export default function App() {
-  const [user,       setUser]       = useState(null);
-  const [page,       setPage]       = useState("dashboard");
-  const [toast,      setToast]      = useState(null);
-  const [live,       setLive]       = useState(false);
-  const [connected,  setConnected]  = useState(false);
-  const [rows,       setRows]       = useState([]);
-  const [streamRate, setStreamRate] = useState(null);
+  const [sensorMode,  setSensorMode]  = useState(null); // null | "side-by-side" | "opposite"
+  const [user,        setUser]        = useState(null);
+  const [page,        setPage]        = useState("dashboard");
+  const [toast,       setToast]       = useState(null);
+  const [live,        setLive]        = useState(false);
+  const [connected,   setConnected]   = useState(false);
+  const [rows,        setRows]        = useState([]);
+  const [streamRate,  setStreamRate]  = useState(null);
   const [thicknessState, setThicknessState] = useState(null);
   const [calibrationBusy, setCalibrationBusy] = useState(false);
   const [runModeVisitKey, setRunModeVisitKey] = useState(0);
@@ -32,6 +47,12 @@ export default function App() {
   const dataBufferRef   = useRef([]);
   const lastReadingTime = useRef(null);
 
+  // ── Mode selection ─────────────────────────────────────────────────────
+  function handleSelectMode(mode) {
+    setSensorMode(mode);
+  }
+
+  // ── Shared helpers ──────────────────────────────────────────────────────
   function showToast(msg, type = "success") {
     setToast({ msg, type, key: Date.now() });
   }
@@ -59,6 +80,7 @@ export default function App() {
     }
   }
 
+  // ── Side-by-side mode handlers ─────────────────────────────────────────
   async function handleApplyCalibration(referenceThickness) {
     setCalibrationBusy(true);
     try {
@@ -74,7 +96,6 @@ export default function App() {
         return false;
       }
 
-      // Fetch full thickness state after calibration to avoid partial-state overwrite
       await refreshThicknessState();
       try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
       try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
@@ -114,6 +135,93 @@ export default function App() {
     }
   }
 
+  // ── Opposite-side mode handlers ────────────────────────────────────────
+  async function handleSetAutoGap(objectThickness, toleranceMin, toleranceMax) {
+    setCalibrationBusy(true);
+    try {
+      const response = await fetch(`${SERVER}/thickness/auto-gap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          object_thickness: objectThickness,
+          thickness_tolerance_min: toleranceMin || null,
+          thickness_tolerance_max: toleranceMax || null,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data?.error || "Unable to set auto gap", "error");
+        return false;
+      }
+
+      await refreshThicknessState();
+      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
+      try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
+      showToast(data.message || "Auto-gap setup successfully", "success");
+      return true;
+    } catch {
+      showToast("Unable to set auto gap", "error");
+      return false;
+    } finally {
+      setCalibrationBusy(false);
+    }
+  }
+
+  async function handleSetGapDistance(gapDistance) {
+    setCalibrationBusy(true);
+    try {
+      const response = await fetch(`${SERVER}/thickness/gap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gap_distance: gapDistance }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data?.error || "Unable to set gap distance", "error");
+        return false;
+      }
+
+      await refreshThicknessState();
+      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
+      try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
+      showToast(data.message || "Gap distance set successfully", "success");
+      return true;
+    } catch {
+      showToast("Unable to set gap distance", "error");
+      return false;
+    } finally {
+      setCalibrationBusy(false);
+    }
+  }
+
+  async function handleResetGap() {
+    setCalibrationBusy(true);
+    try {
+      const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
+        method: "POST",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        showToast(data?.error || "Unable to reset", "error");
+        return false;
+      }
+
+      await refreshThicknessState();
+      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
+      showToast(data.message || "Reset successfully", "success");
+      return true;
+    } catch {
+      showToast("Unable to reset", "error");
+      return false;
+    } finally {
+      setCalibrationBusy(false);
+    }
+  }
+
+  // ── Socket ──────────────────────────────────────────────────────────────
   function connectSocket() {
     if (socketRef.current) return;
     const socket = io(SERVER, { transports: ["websocket"] });
@@ -129,15 +237,28 @@ export default function App() {
     });
 
     socket.on("sensor_reading", (data) => {
-      const row = {
-        id: counterRef.current++,
-        ts: data.timestamp
-          ? data.timestamp.replace("T", " ").slice(0, 23)
-          : new Date().toISOString().replace("T", " ").slice(0, 23),
-        a: data.sensor_A ?? null,
-        b: data.sensor_B ?? null,
-        c: data.sensor_C ?? null,
-      };
+      let row;
+      if (sensorMode === "opposite") {
+        row = {
+          id: counterRef.current++,
+          ts: data.timestamp
+            ? data.timestamp.replace("T", " ").slice(0, 23)
+            : new Date().toISOString().replace("T", " ").slice(0, 23),
+          a: data.distance_A ?? null,
+          b: data.distance_B ?? null,
+          thickness: data.thickness ?? null,
+        };
+      } else {
+        row = {
+          id: counterRef.current++,
+          ts: data.timestamp
+            ? data.timestamp.replace("T", " ").slice(0, 23)
+            : new Date().toISOString().replace("T", " ").slice(0, 23),
+          a: data.sensor_A ?? null,
+          b: data.sensor_B ?? null,
+          c: data.sensor_C ?? null,
+        };
+      }
 
       dataBufferRef.current = [row, ...dataBufferRef.current].slice(0, 100000);
       setRows(prev => [row, ...prev.slice(0, 99)]);
@@ -169,6 +290,7 @@ export default function App() {
     else connectSocket();
   }
 
+  // ── Login / Logout ───────────────────────────────────────────────────────
   function handleLogin(u) {
     setUser(u);
     setPage("dashboard");
@@ -197,6 +319,12 @@ export default function App() {
     lastReadingTime.current = null;
   }
 
+  // ── Reset mode (full logout including mode) ──────────────────────────────
+  function handleBackToModeSelection() {
+    handleLogout();
+    setSensorMode(null);
+  }
+
   useEffect(() => {
     if (!user) return;
     loadThicknessState();
@@ -214,14 +342,29 @@ export default function App() {
     };
   }, []);
 
-  if (!user) return <LoginPage onLogin={handleLogin} />;
+  // ── Show mode selection first if no mode chosen ──
+  if (!sensorMode) return <ModeSelection onSelectMode={handleSelectMode} />;
+
+  // ── Mode is chosen but no user → show login ──
+  const isOpposite = sensorMode === "opposite";
+  const LoginComponent = isOpposite ? OppLoginPage : SbsLoginPage;
+
+  if (!user) return <LoginComponent onLogin={handleLogin} />;
+
+  // ── Logged in ──
+  const ActiveTopbar  = isOpposite ? OppTopbar : Topbar;
+  const ActiveSidebar = isOpposite ? OppSidebar : Sidebar;
+  const DashboardPage    = isOpposite ? OppDashboardPage : SbsDashboardPage;
+  const SensorConfigPage = isOpposite ? OppSensorConfigPage : SbsSensorConfigPage;
+  const DownloadPage     = isOpposite ? OppDownloadPage : SbsDownloadPage;
+  const BackendPage      = isOpposite ? OppBackendPage : SbsBackendPage;
 
   return (
     <div className="app-shell">
-      <Topbar user={user} page={page} onLogout={handleLogout} />
+      <ActiveTopbar user={user} page={page} onLogout={handleBackToModeSelection} />
 
       <div className="content-area">
-        <Sidebar user={user} page={page} onNavigate={setPage} onLogout={handleLogout} />
+        <ActiveSidebar user={user} page={page} onNavigate={setPage} onLogout={handleBackToModeSelection} />
 
         <div className="main">
           {page === "dashboard" && (
@@ -236,18 +379,34 @@ export default function App() {
             <SensorConfigPage user={user} onToast={showToast} />
           )}
           {page === "run-mode" && (
-            <RunModePage
-              user={user}
-              rows={rows}
-              live={live}
-              connected={connected}
-              onToggle={handleToggle}
-              thicknessState={thicknessState}
-              onApplyCalibration={handleApplyCalibration}
-              onResetCalibration={handleResetCalibration}
-              calibrationBusy={calibrationBusy}
-              runModeVisitKey={runModeVisitKey}
-            />
+            isOpposite ? (
+              <OppRunModePage
+                user={user}
+                rows={rows}
+                live={live}
+                connected={connected}
+                onToggle={handleToggle}
+                thicknessState={thicknessState}
+                onSetGapDistance={handleSetGapDistance}
+                onSetAutoGap={handleSetAutoGap}
+                onResetGap={handleResetGap}
+                calibrationBusy={calibrationBusy}
+                runModeVisitKey={runModeVisitKey}
+              />
+            ) : (
+              <SbsRunModePage
+                user={user}
+                rows={rows}
+                live={live}
+                connected={connected}
+                onToggle={handleToggle}
+                thicknessState={thicknessState}
+                onApplyCalibration={handleApplyCalibration}
+                onResetCalibration={handleResetCalibration}
+                calibrationBusy={calibrationBusy}
+                runModeVisitKey={runModeVisitKey}
+              />
+            )
           )}
           {page === "download" && (
             <DownloadPage
