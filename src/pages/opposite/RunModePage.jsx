@@ -164,141 +164,73 @@ export default function RunModePage({
 
   function drawThicknessGraph(canvas) {
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width;
-    const H = canvas.height;
+    const ctx   = canvas.getContext("2d");
+    const W     = canvas.width;
+    const H     = canvas.height;
     const slice = [...rows].reverse().slice(0, WINDOW);
-    const vals = slice.map(r => parseFloat(r.thickness)).filter(n => !isNaN(n));
+    const vals  = slice.map(r => parseFloat(r.thickness)).filter(n => !isNaN(n));
 
     ctx.clearRect(0, 0, W, H);
 
     if (vals.length < 2) {
-      ctx.fillStyle = "#9ca3af";
-      ctx.font = "12px Inter, sans-serif";
+      ctx.fillStyle = "#8e97ab";
+      ctx.font      = "11px 'JetBrains Mono', monospace";
       ctx.textAlign = "center";
-      ctx.fillText("Waiting for thickness data...", W / 2, H / 2);
+      ctx.fillText("Waiting for data…", W / 2, H / 2);
       return;
     }
 
-    const mn = parseFloat(minLimit);
-    const mx = parseFloat(maxLimit);
-    const dataMin = Math.min(...vals);
-    const dataMax = Math.max(...vals);
-    const yPadding = Math.max((dataMax - dataMin) * 5, 0.5);
-    const paddedMin = dataMin - yPadding;
-    const paddedMax = dataMax + yPadding;
-    const range = paddedMax - paddedMin || 1;
-    const pad = { top: 16, bottom: 22, left: 44, right: 16 };
-    const gW = W - pad.left - pad.right;
-    const gH = H - pad.top - pad.bottom;
+    const mn    = parseFloat(minLimit);
+    const mx    = parseFloat(maxLimit);
+    const min   = Math.min(...vals) - 0.5;
+    const max   = Math.max(...vals) + 0.5;
+    const pad   = { top: 10, bottom: 20, left: 36, right: 10 };
+    const gW    = W - pad.left - pad.right;
+    const gH    = H - pad.top - pad.bottom;
     const total = vals.length;
 
-    function xPos(i) { return pad.left + (i / Math.max(total - 1, 1)) * gW; }
-    function yPos(v) { return pad.top + (1 - (v - paddedMin) / range) * gH; }
+    function xPos(i) { return pad.left + (i / (total - 1)) * gW; }
+    function yPos(v) { return pad.top + (1 - (v - min) / (max - min)) * gH; }
 
-    // Background fill
-    ctx.fillStyle = "#fafbfc";
-    ctx.fillRect(pad.left, pad.top, gW, gH);
-
-    // Horizontal grid lines (lighter)
-    ctx.strokeStyle = "#e8ecf1";
-    ctx.lineWidth = 1;
-    const gridCount = 5;
-    for (let i = 0; i <= gridCount; i++) {
-      const y = pad.top + (i / gridCount) * gH;
+    // Grid lines
+    ctx.strokeStyle = "#dfe2e9";
+    ctx.lineWidth   = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (i / 4) * gH;
       ctx.beginPath();
       ctx.moveTo(pad.left, y);
       ctx.lineTo(W - pad.right, y);
       ctx.stroke();
-    }
-
-    // Vertical grid lines (lighter)
-    const vGridCount = 8;
-    for (let i = 1; i < vGridCount; i++) {
-      const x = pad.left + (i / vGridCount) * gW;
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, pad.top + gH);
-      ctx.stroke();
-    }
-
-    // Y-axis labels
-    ctx.fillStyle = "#9ca3af";
-    ctx.font = "10px Inter, sans-serif";
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i <= gridCount; i++) {
-      const y = pad.top + (i / gridCount) * gH;
-      const val = paddedMax - (i / gridCount) * range;
-      ctx.fillText(val.toFixed(3), pad.left - 6, y);
-    }
-
-    // X-axis labels (sample index)
-    ctx.fillStyle = "#9ca3af";
-    ctx.font = "9px Inter, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    for (let i = 0; i < vGridCount; i++) {
-      const x = pad.left + (i / vGridCount) * gW;
-      ctx.fillText(`-${Math.round((vGridCount - i) * total / vGridCount)}`, x, pad.top + gH + 4);
+      const label = (max - (i / 4) * (max - min)).toFixed(2);
+      ctx.fillStyle  = "#8e97ab";
+      ctx.font       = "9px 'JetBrains Mono', monospace";
+      ctx.textAlign  = "right";
+      ctx.fillText(label, pad.left - 4, y + 3);
     }
 
     // Min limit line
-    if (limitActive && !isNaN(mn)) {
-      const y = yPos(mn);
-      if (y >= pad.top && y <= pad.top + gH) {
-        ctx.strokeStyle = "#b24949";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([5, 4]);
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(W - pad.right, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#b24949";
-        ctx.font = "9px Inter, sans-serif";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(`Min ${mn.toFixed(2)}`, pad.left + 4, y - 2);
-      }
+    if (limitActive && !isNaN(mn) && mn >= min && mn <= max) {
+      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, yPos(mn));
+      ctx.lineTo(W - pad.right, yPos(mn));
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Max limit line
-    if (limitActive && !isNaN(mx)) {
-      const y = yPos(mx);
-      if (y >= pad.top && y <= pad.top + gH) {
-        ctx.strokeStyle = "#b24949";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([5, 4]);
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(W - pad.right, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = "#b24949";
-        ctx.font = "9px Inter, sans-serif";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        ctx.fillText(`Max ${mx.toFixed(2)}`, pad.left + 4, y + 2);
-      }
+    if (limitActive && !isNaN(mx) && mx >= min && mx <= max) {
+      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, yPos(mx));
+      ctx.lineTo(W - pad.right, yPos(mx));
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
-
-    // Gradient fill under the line
-    const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + gH);
-    gradient.addColorStop(0, "rgba(45,122,79,0.15)");
-    gradient.addColorStop(1, "rgba(45,122,79,0.01)");
-    ctx.beginPath();
-    vals.forEach((v, i) => {
-      const x = xPos(i);
-      const y = yPos(v);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.lineTo(xPos(vals.length - 1), pad.top + gH);
-    ctx.lineTo(xPos(0), pad.top + gH);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
 
     // Line
     ctx.beginPath();
@@ -306,32 +238,20 @@ export default function RunModePage({
       const x = xPos(i);
       const y = yPos(v);
       if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      else         ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = "#2d7a4f";
-    ctx.lineWidth = 2.5;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
+    ctx.strokeStyle = "#3B55A8";
+    ctx.lineWidth   = 1.5;
     ctx.stroke();
 
-    // Dots (only show every Nth dot for cleaner look)
-    const dotStep = Math.max(1, Math.floor(vals.length / 60));
+    // Dots
     vals.forEach((v, i) => {
-      if (i % dotStep !== 0 && i !== vals.length - 1) return;
       const inLimit = !limitActive || (
         (isNaN(mn) || v >= mn) && (isNaN(mx) || v <= mx)
       );
-      const x = xPos(i);
-      const y = yPos(v);
-      // Outer white ring
       ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff";
-      ctx.fill();
-      // Inner colored dot
-      ctx.beginPath();
-      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = inLimit ? "#2d7a4f" : "#b24949";
+      ctx.arc(xPos(i), yPos(v), 2, 0, Math.PI * 2);
+      ctx.fillStyle = inLimit ? "#3B55A8" : "#8a6262";
       ctx.fill();
     });
   }
