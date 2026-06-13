@@ -6,9 +6,9 @@ After=network.target
 Type=simple
 User=linux
 Group=linux
-WorkingDirectory=/home/linux/final_webapp/backend
+WorkingDirectory=/home/linux/merged/final_webapp/backend
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/linux/final_webapp/backend/.venv/bin/python /home/linux/final_webapp/backend/merged_server.py
+ExecStart=/home/linux/merged/final_webapp/backend/.venv/bin/python /home/linux/merged/final_webapp/backend/merged_server.py
 Restart=always
 RestartSec=5
 
