@@ -1167,6 +1167,7 @@ def background_stream_task():
         for sid, sensor in sensors_snapshot.items():
             val = sensor.get_single_measurement()
             if val is not None:
+                # Store raw distance for batches (used for opposite mode distance_X and SBS thickness)
                 batches[sid].append(val)
                 raw_snapshot[sid] = val
                 all_sensors_failed = False
@@ -1177,7 +1178,7 @@ def background_stream_task():
             mode = get_current_mode()
             raw_ts = datetime.datetime.now()
             
-            # For SBS mode: calculate per-sensor thickness
+            # Calculate thickness values for both modes
             sbs_a = calculate_thickness_sbs("A", raw_snapshot.get("A")) if "A" in raw_snapshot else None
             sbs_b = calculate_thickness_sbs("B", raw_snapshot.get("B")) if "B" in raw_snapshot else None
             sbs_c = calculate_thickness_sbs("C", raw_snapshot.get("C")) if "C" in raw_snapshot else None
@@ -1213,8 +1214,12 @@ def background_stream_task():
             trim_pct = get_trim_pct()
             for sid in sensors_snapshot.keys():
                 if batches[sid]:
-                    payload[f"sensor_{sid}"] = round(calculate_filtered_average(batches[sid], trim_pct), 3)
-                    payload[f"distance_{sid}"] = round(calculate_filtered_average(batches[sid], trim_pct), 3)
+                    # Raw distance (for opposite mode)
+                    distance_val = round(calculate_filtered_average(batches[sid], trim_pct), 3)
+                    payload[f"distance_{sid}"] = distance_val
+                    # Thickness (for SBS mode) - calculated from raw measurement
+                    thickness_val = calculate_thickness_sbs(sid, distance_val)
+                    payload[f"sensor_{sid}"] = round(thickness_val, 3) if thickness_val is not None else distance_val
                     batches[sid] = []
                     has_data = True
                 else:
