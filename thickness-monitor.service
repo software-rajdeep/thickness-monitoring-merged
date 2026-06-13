@@ -1,5 +1,5 @@
 [Unit]
-Description=Thickness Monitor Backend Service
+Description=Thickness Monitor Merged Backend Service
 After=network.target
 
 [Service]
@@ -8,7 +8,7 @@ User=linux
 Group=linux
 WorkingDirectory=/home/linux/final_webapp/backend
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/linux/final_webapp/backend/.venv/bin/python /home/linux/final_webapp/backend/cd22_server.py
+ExecStart=/home/linux/final_webapp/backend/.venv/bin/python /home/linux/final_webapp/backend/merged_server.py
 Restart=always
 RestartSec=5
 
