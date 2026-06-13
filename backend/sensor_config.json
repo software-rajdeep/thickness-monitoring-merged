@@ -1,6 +1,6 @@
 {
     "global_settings": {
-        "stream_rate_hz": 0.5
+        "stream_rate_hz": 5
     },
     "sensor_A": {
         "alarm_output": "Clamp",
