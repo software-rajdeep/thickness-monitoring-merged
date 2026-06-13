@@ -1,3 +1,5 @@
+import { Ic } from "../icons/Icons";
+
 export default function ModeSelection({ onSelectMode }) {
   return (
     <div className="login-wrap">
@@ -5,12 +7,7 @@ export default function ModeSelection({ onSelectMode }) {
         <div className="login-header">
           <div className="login-logo-wrap" style={{ justifyContent: "center" }}>
             <div className="login-mark">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                style={{ color: "#fff" }}>
-                <path d="M3 3v18h18" />
-                <path d="M7 16l4-8 4 4 4-6" />
-              </svg>
+              <Ic.Logo />
             </div>
             <span className="login-title">THICKNESS MONITORING</span>
           </div>
