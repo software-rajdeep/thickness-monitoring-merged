@@ -160,7 +160,10 @@ def load_network_config():
     try:
         with open(NETWORK_CONFIG_FILE_PATH, 'r') as file_handle:
             payload = json.load(file_handle)
-        normalized, _ = normalize_network_config(payload, get_default_sensor_configs(MODE_SBS))
+        # Detect mode from stored config: if only A & B → opposite mode, otherwise SBS
+        keys = set(k.upper() for k in payload.keys() if isinstance(payload[k], dict))
+        base = get_default_sensor_configs(MODE_OPP) if keys == {"A", "B"} else get_default_sensor_configs(MODE_SBS)
+        normalized, _ = normalize_network_config(payload, base)
         return normalized
     except Exception:
         return get_default_sensor_configs(MODE_SBS).copy()
