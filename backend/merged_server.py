@@ -27,8 +27,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SENSOR_CONFIGS = {}
 
 SENSOR_TIMEOUT = 2.0
-SERVER_IP = '0.0.0.0'         
-SERVER_PORT = 5000
+SERVER_IP = '0.0.0.0'
+SERVER_PORT = int(os.environ.get("SERVER_PORT", "5002"))
+CLOUD_MODE = os.environ.get("CLOUD_MODE", "false").lower() == "true"
+INGEST_API_KEY = os.environ.get("INGEST_API_KEY", "merged-secret-2026")
 
 # --- DATABASE CONFIG ---
 DB_HOST = "localhost"
@@ -622,8 +624,15 @@ stream_state = {
     "active": False,
     "target_rate_hz": 5.0,
     "thread": None,
-    "connected_clients": 0 
+    "connected_clients": 0
 }
+
+last_ingest_reading = {"A": None, "B": None, "C": None}
+pending_config_commands = []
+config_results = []
+pending_config_lock = threading.Lock()
+_last_ingest_emit_time = 0.0
+_ingest_emit_lock = threading.Lock()
 
 # ==========================================
 # APIS - CONFIG FILE SYNC
@@ -656,8 +665,23 @@ def thickness_state_api():
 
 @app.route('/thickness/setup-ready', methods=['POST'])
 def thickness_setup_ready():
-    if not active_sensors_map:
-        return jsonify({"error": "No active sensors available."}), 400
+    if CLOUD_MODE or not active_sensors_map:
+        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
+        if not reading:
+            return jsonify({"error": "No sensor reading received yet. Ensure the Pi client is running and sending data."}), 400
+        updated_state = default_thickness_state()
+        updated_state["setup_ready"] = True
+        updated_state["captured_at"] = datetime.datetime.now().isoformat()
+        for sid, val in reading.items():
+            updated_state["reference_readings"][sid] = round(float(val), 3)
+        set_thickness_state(updated_state)
+        return jsonify({
+            "message": "Starting readings captured successfully.",
+            "setup_ready": True,
+            "captured_at": updated_state.get("captured_at"),
+            "reference_readings": updated_state.get("reference_readings", {}),
+            "captured_readings": reading,
+        }), 200
     captured_readings, failures = capture_starting_readings()
     if not captured_readings:
         return jsonify({"error": "Unable to capture starting readings."}), 500
@@ -674,8 +698,6 @@ def thickness_setup_ready():
 
 @app.route('/thickness/calibration', methods=['POST'])
 def thickness_calibration():
-    if not active_sensors_map:
-        return jsonify({"error": "No active sensors available."}), 400
     data = request.json or {}
     try:
         reference_thickness = float(data.get("reference_thickness"))
@@ -683,9 +705,32 @@ def thickness_calibration():
         return jsonify({"error": "A valid reference thickness is required."}), 400
     if reference_thickness < 0:
         return jsonify({"error": "Reference thickness must be zero or greater."}), 400
-    captured_readings, failures = capture_calibration(reference_thickness)
-    if not captured_readings:
-        return jsonify({"error": "Unable to capture calibration readings."}), 500
+
+    if CLOUD_MODE:
+        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
+        if not reading:
+            return jsonify({"error": "Waiting for sensor readings. Ensure Pi client is running."}), 400
+        captured_readings = {k: round(float(v), 3) for k, v in reading.items()}
+        failures = []
+        current_state = get_thickness_state()
+        updated_state = default_thickness_state()
+        updated_state["setup_ready"] = current_state.get("setup_ready", False)
+        updated_state["captured_at"] = current_state.get("captured_at")
+        updated_state["reference_readings"] = normalize_sensor_readings(current_state.get("reference_readings", {}))
+        updated_state["calibration_completed"] = True
+        updated_state["calibration_active"] = True
+        updated_state["calibration_captured_at"] = datetime.datetime.now().isoformat()
+        updated_state["calibration_reference_thickness"] = round(float(reference_thickness), 3)
+        for sensor_id, reading_val in captured_readings.items():
+            updated_state["calibration_baseline_readings"][sensor_id] = reading_val
+        set_thickness_state(updated_state)
+    else:
+        if not active_sensors_map:
+            return jsonify({"error": "No active sensors available."}), 400
+        captured_readings, failures = capture_calibration(reference_thickness)
+        if not captured_readings:
+            return jsonify({"error": "Unable to capture calibration readings."}), 500
+
     response_payload = {
         "message": "Calibration saved successfully.",
         "calibration_active": True,
@@ -722,7 +767,7 @@ def thickness_gap_set():
 @app.route('/thickness/auto-gap', methods=['POST'])
 def thickness_auto_gap_set():
     """Auto-calculate gap distance using object thickness (opposite mode)."""
-    if not active_sensors_map:
+    if not CLOUD_MODE and not active_sensors_map:
         return jsonify({"error": "No active sensors available."}), 400
     data = request.json or {}
     try:
@@ -731,7 +776,14 @@ def thickness_auto_gap_set():
         return jsonify({"error": "A valid object thickness is required."}), 400
     if object_thickness <= 0:
         return jsonify({"error": "Object thickness must be greater than zero."}), 400
-    captured_readings, failures = capture_active_sensor_readings()
+    if CLOUD_MODE:
+        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
+        if len(reading) < 2:
+            return jsonify({"error": "Waiting for readings from both sensors. Ensure Pi client is running."}), 400
+        captured_readings = {k: round(float(v), 3) for k, v in reading.items()}
+        failures = []
+    else:
+        captured_readings, failures = capture_active_sensor_readings()
     if not captured_readings or len(captured_readings) < 2:
         return jsonify({"error": "Unable to capture readings from both sensors."}), 500
     dist_A = captured_readings.get("A")
@@ -839,6 +891,20 @@ def read_setting():
 def write_setting():
     data = request.json
     target = str(data.get("sensor", "A")).upper()
+
+    if CLOUD_MODE:
+        cmd_id = int(time.time() * 1000)
+        with pending_config_lock:
+            pending_config_commands.append({
+                "id":     cmd_id,
+                "sensor": target,
+                "addr_h": data.get("addr_h"),
+                "addr_l": data.get("addr_l"),
+                "val_h":  data.get("val_h", "0x00"),
+                "val_l":  data.get("val_l"),
+            })
+        return jsonify({"message": f"Write queued for Pi relay (id={cmd_id})", "status": "pending", "id": cmd_id}), 200
+
     if target not in active_sensors_map:
         return jsonify({"error": f"Sensor '{target}' is not online."}), 400
     sensor = active_sensors_map[target]
@@ -893,18 +959,154 @@ def config_trim():
         return jsonify({"error": "Invalid trim_pct value"}), 400
     
 # ==========================================
+# APIS - EXTERNAL INGEST (Ubuntu/Pi POST)
+# ==========================================
+@app.route('/ingest/readings', methods=['POST'])
+def ingest_readings():
+    if INGEST_API_KEY and request.headers.get("X-Api-Key") != INGEST_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = request.json or {}
+    a = payload.get('sensor_A')
+    b = payload.get('sensor_B')
+    c = payload.get('sensor_C')
+    ts = payload.get('timestamp') or datetime.datetime.now().isoformat()
+
+    global last_ingest_reading
+    if a is not None: last_ingest_reading["A"] = float(a)
+    if b is not None: last_ingest_reading["B"] = float(b)
+    if c is not None: last_ingest_reading["C"] = float(c)
+
+    dist_A = float(a) if a is not None else last_ingest_reading.get("A")
+    dist_B = float(b) if b is not None else last_ingest_reading.get("B")
+    dist_C = float(c) if c is not None else last_ingest_reading.get("C")
+
+    thickness_val = calculate_opposite_thickness(dist_A, dist_B)
+    sbs_a = calculate_thickness_sbs("A", dist_A) if dist_A is not None else None
+    sbs_b = calculate_thickness_sbs("B", dist_B) if dist_B is not None else None
+    sbs_c = calculate_thickness_sbs("C", dist_C) if dist_C is not None else None
+
+    global _last_ingest_emit_time
+    _now = time.time()
+    _due = False
+    with _ingest_emit_lock:
+        if (_now - _last_ingest_emit_time) >= (1.0 / stream_state["target_rate_hz"]):
+            _last_ingest_emit_time = _now
+            _due = True
+
+    if _due:
+        try:
+            socketio.emit('sensor_reading', {
+                "timestamp": ts,
+                "distance_A": round(dist_A, 3) if dist_A is not None else None,
+                "distance_B": round(dist_B, 3) if dist_B is not None else None,
+                "distance_C": round(dist_C, 3) if dist_C is not None else None,
+                "sensor_A":   round(sbs_a, 3)  if sbs_a  is not None else None,
+                "sensor_B":   round(sbs_b, 3)  if sbs_b  is not None else None,
+                "sensor_C":   round(sbs_c, 3)  if sbs_c  is not None else None,
+                "thickness":  round(thickness_val, 3) if thickness_val is not None else None,
+            })
+        except Exception:
+            pass
+
+    try:
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+        cur = conn.cursor()
+
+        raw_id = get_next_db_id(cur, DB_TABLE_UNFILTERED, LIMIT_UNFILTERED)
+        cur.execute(f"""
+            INSERT INTO {DB_TABLE_UNFILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                sensor_a = EXCLUDED.sensor_a,
+                sensor_b = EXCLUDED.sensor_b,
+                sensor_c = EXCLUDED.sensor_c
+        """, (raw_id, ts, dist_A, dist_B, dist_C))
+
+        fil_id = get_next_db_id(cur, DB_TABLE_FILTERED, LIMIT_FILTERED)
+        cur.execute(f"""
+            INSERT INTO {DB_TABLE_FILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                sensor_a = EXCLUDED.sensor_a,
+                sensor_b = EXCLUDED.sensor_b,
+                sensor_c = EXCLUDED.sensor_c
+        """, (fil_id, ts, sbs_a, sbs_b, sbs_c))
+
+        thick_raw_id = get_next_db_id(cur, DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW)
+        cur.execute(f"""
+            INSERT INTO {DB_TABLE_THICKNESS_RAW} (id, timestamp, sensor_a, sensor_b, thickness)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                sensor_a = EXCLUDED.sensor_a,
+                sensor_b = EXCLUDED.sensor_b,
+                thickness = EXCLUDED.thickness
+        """, (thick_raw_id, ts, dist_A, dist_B, thickness_val))
+
+        thick_id = get_next_db_id(cur, DB_TABLE_THICKNESS, LIMIT_THICKNESS)
+        cur.execute(f"""
+            INSERT INTO {DB_TABLE_THICKNESS} (id, timestamp, sensor_a, sensor_b, thickness)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                timestamp = EXCLUDED.timestamp,
+                sensor_a = EXCLUDED.sensor_a,
+                sensor_b = EXCLUDED.sensor_b,
+                thickness = EXCLUDED.thickness
+        """, (thick_id, ts, dist_A, dist_B, thickness_val))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "ingest_ok", "id": raw_id}), 200
+    except Exception as e:
+        try:
+            fallback_path = os.path.join(BASE_DIR, 'ingest_fallback.jsonl')
+            with open(fallback_path, 'a') as fh:
+                fh.write(json.dumps({"timestamp": ts, "sensor_A": a, "sensor_B": b, "sensor_C": c}) + "\n")
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/config/poll', methods=['GET'])
+def config_poll():
+    if INGEST_API_KEY and request.headers.get("X-Api-Key") != INGEST_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+    with pending_config_lock:
+        cmds = list(pending_config_commands)
+        pending_config_commands.clear()
+    return jsonify({"commands": cmds}), 200
+
+@app.route('/config/result', methods=['POST'])
+def config_result():
+    if INGEST_API_KEY and request.headers.get("X-Api-Key") != INGEST_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.json or {}
+    with pending_config_lock:
+        config_results.append(payload)
+    print(f"[CONFIG RESULT] sensor={payload.get('sensor')} id={payload.get('id')} success={payload.get('success')}")
+    return jsonify({"message": "result received"}), 200
+
+# ==========================================
 # API - SENSOR STATUS
 # ==========================================
 @app.route('/sensors/status', methods=['GET'])
 def sensors_status():
-    with sensors_lock:
-        active_ids = list(active_sensors_map.keys())
+    if CLOUD_MODE:
+        active_ids = [sid for sid, val in last_ingest_reading.items() if val is not None]
+    else:
+        with sensors_lock:
+            active_ids = list(active_sensors_map.keys())
     status = {}
-    for sid, config in SENSOR_CONFIGS.items():
+    all_sids = list(SENSOR_CONFIGS.keys()) if SENSOR_CONFIGS else list(last_ingest_reading.keys())
+    for sid in all_sids:
+        config = SENSOR_CONFIGS.get(sid, {})
         status[sid] = {
-            "ip": config["ip"],
-            "port": config.get("port", 8234),
-            "name": config.get("name", f"Sensor {sid}"),
+            "ip":     config.get("ip", ""),
+            "port":   config.get("port", 8234),
+            "name":   config.get("name", f"Sensor {sid}"),
             "online": sid in active_ids,
         }
     return jsonify(status), 200
@@ -1107,7 +1309,13 @@ def calculate_filtered_average(data_batch, trim_pct=10):
 
 def background_stream_task():
     print(">>> Stream Task Started (with PostgreSQL Logging)")
-    
+
+    if CLOUD_MODE:
+        print(">>> CLOUD_MODE: sensor data arrives via /ingest/readings — stream task idling.")
+        while True:
+            socketio.sleep(1)
+        return
+
     db_conn = None
     try:
         db_conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
@@ -1314,17 +1522,21 @@ if __name__ == '__main__':
     init_thickness_state_file()
     init_network_config_file()
 
-    print("Detecting hardware configuration...")
-    refresh_sensor_configs()
-    
-    mode = get_current_mode()
-    print(f"Detected mode: {mode.upper()}")
-    print(f"Active Sensors: {list(active_sensors_map.keys())}")
+    if CLOUD_MODE:
+        print("CLOUD_MODE=true — skipping local sensor detection. Pi will POST data via /ingest/readings.")
+    else:
+        print("Detecting hardware configuration...")
+        refresh_sensor_configs()
+        mode = get_current_mode()
+        print(f"Detected mode: {mode.upper()}")
+        print(f"Active Sensors: {list(active_sensors_map.keys())}")
+
+    print(f"CLOUD_MODE: {CLOUD_MODE}")
     print(f"Listening on {SERVER_IP}:{SERVER_PORT}")
     print("==================================================")
 
     try:
-        socketio.run(app, host=SERVER_IP, port=SERVER_PORT, debug=False, use_reloader=False,   allow_unsafe_werkzeug=True)
+        socketio.run(app, host=SERVER_IP, port=SERVER_PORT, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         for sensor in active_sensors_map.values():
             sensor.disconnect()

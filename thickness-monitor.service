@@ -1,15 +1,21 @@
 [Unit]
-Description=Thickness Monitor Merged Backend Service
-After=network.target
+Description=Merged Thickness Monitor Backend (KVM Cloud Server)
+After=network.target postgresql.service
 
 [Service]
 Type=simple
-User=linux
-Group=linux
-WorkingDirectory=/home/linux/merged/final_webapp/backend
+User=www-data
+WorkingDirectory=/opt/merged/backend
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/linux/merged/final_webapp/backend/.venv/bin/python /home/linux/merged/final_webapp/backend/merged_server.py
-Restart=always
+Environment=CLOUD_MODE=true
+Environment=SERVER_PORT=5002
+Environment=INGEST_API_KEY=merged-secret-2026
+Environment=DB_HOST=localhost
+Environment=DB_NAME=sensor_db
+Environment=DB_USER=rapl
+Environment=DB_PASS=rapl2026
+ExecStart=/opt/merged/venv/bin/python merged_server.py
+Restart=on-failure
 RestartSec=5
 
 [Install]

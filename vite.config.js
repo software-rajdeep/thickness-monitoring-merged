@@ -7,18 +7,17 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Proxy API requests to backend on port 5000
-      '/login':              { target: 'http://localhost:5000', changeOrigin: true },
-      '/users':              { target: 'http://localhost:5000', changeOrigin: true },
-      '/config':             { target: 'http://localhost:5000', changeOrigin: true },
-      '/stream':             { target: 'http://localhost:5000', changeOrigin: true },
-      '/thickness':          { target: 'http://localhost:5000', changeOrigin: true },
-      '/download':           { target: 'http://localhost:5000', changeOrigin: true },
-      '/db':                 { target: 'http://localhost:5000', changeOrigin: true },
-      '/server':             { target: 'http://localhost:5000', changeOrigin: true },
-      '/sensors':            { target: 'http://localhost:5000', changeOrigin: true },
+      '/login':              { target: 'http://localhost:5002', changeOrigin: true },
+      '/users':              { target: 'http://localhost:5002', changeOrigin: true },
+      '/config':             { target: 'http://localhost:5002', changeOrigin: true },
+      '/stream':             { target: 'http://localhost:5002', changeOrigin: true },
+      '/thickness':          { target: 'http://localhost:5002', changeOrigin: true },
+      '/download':           { target: 'http://localhost:5002', changeOrigin: true },
+      '/db':                 { target: 'http://localhost:5002', changeOrigin: true },
+      '/server':             { target: 'http://localhost:5002', changeOrigin: true },
+      '/sensors':            { target: 'http://localhost:5002', changeOrigin: true },
       '/socket.io': {
-        target: 'http://localhost:5000',
+        target: 'http://localhost:5002',
         changeOrigin: true,
         ws: true,
       },
