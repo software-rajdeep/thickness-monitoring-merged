@@ -28,3 +28,15 @@ Desktop (Copy 3)/
 backend/__pycache__/
 backend/*.pyc
 backend/thickness_state.json
+.server_access.json
+
+# Temporary diagnostic / one-off scripts
+check_*.py
+diagnose_*.py
+fix_*.py
+open_*.py
+verify.py
+e2e_check.py
+finalize_*.py
+deploy_ubuntu.py
+temp_*.py
