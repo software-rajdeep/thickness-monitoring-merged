@@ -607,6 +607,10 @@ app = Flask(__name__)
 from user_routes import register_user_routes
 register_user_routes(app)
 
+# Register email alert routes
+from email_alert_routes import email_alerts_bp
+app.register_blueprint(email_alerts_bp)
+
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
