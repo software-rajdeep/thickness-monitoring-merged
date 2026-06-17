@@ -6,12 +6,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=linux
-WorkingDirectory=/home/linux/merged-client
+WorkingDirectory=/home/linux/merged-version/backend
 Environment=PYTHONUNBUFFERED=1
 Environment=SERVER_URL=http://194.164.148.145:8082
 Environment=API_KEY=merged-secret-2026
 Environment=POST_RATE_HZ=5
-ExecStart=/usr/bin/python3 /home/linux/merged-client/pi_client.py
+ExecStart=/usr/bin/python3 /home/linux/merged-version/backend/pi_client.py
 Restart=on-failure
 RestartSec=10
 

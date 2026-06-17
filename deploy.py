@@ -138,26 +138,21 @@ ubuntu = paramiko.SSHClient()
 ubuntu.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ubuntu.connect('192.168.5.13', username='linux', password='linux', timeout=15)
 
-print("\n[Ubuntu] Stopping old thickness-monitor.service...")
-run(ubuntu, "sudo systemctl stop thickness-monitor 2>/dev/null || true", check=False)
-run(ubuntu, "sudo systemctl disable thickness-monitor 2>/dev/null || true", check=False)
-
-print("\n[Ubuntu] Creating /home/linux/merged-client/...")
-run(ubuntu, "mkdir -p /home/linux/merged-client")
-
+print("\n[Ubuntu] Uploading backend files to merged-version...")
 sftp2 = ubuntu.open_sftp()
+for fname in ["pi_client.py", "sensor_network.json", "merged_server.py",
+              "user_routes.py", "download_routes.py", "email_alert_routes.py"]:
+    local = os.path.join(BASE, "backend", fname)
+    if os.path.exists(local):
+        upload_file(sftp2, local, f"/home/linux/merged-version/backend/{fname}")
 
-# Upload pi_client.py and sensor_network.json
-upload_file(sftp2, os.path.join(BASE, "backend", "pi_client.py"), "/home/linux/merged-client/pi_client.py")
-upload_file(sftp2, os.path.join(BASE, "backend", "sensor_network.json"), "/home/linux/merged-client/sensor_network.json")
-
-# Install service (needs sudo)
+# Install service pointing directly at merged-version
 service_content = open(os.path.join(BASE, "backend", "pi_merged.service")).read()
-upload_text(sftp2, service_content, "/home/linux/merged-client/pi_merged.service")
+upload_text(sftp2, service_content, "/home/linux/merged-version/backend/pi_merged.service")
 sftp2.close()
 
 print("\n[Ubuntu] Installing and starting pi-merged-client service...")
-run(ubuntu, "sudo cp /home/linux/merged-client/pi_merged.service /etc/systemd/system/pi-merged-client.service")
+run(ubuntu, "sudo cp /home/linux/merged-version/backend/pi_merged.service /etc/systemd/system/pi-merged-client.service")
 run(ubuntu, "sudo systemctl daemon-reload")
 run(ubuntu, "sudo systemctl enable pi-merged-client")
 run(ubuntu, "sudo systemctl restart pi-merged-client")
