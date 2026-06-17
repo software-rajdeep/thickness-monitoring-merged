@@ -15,7 +15,7 @@ import io
 from psycopg2 import extras
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+# flask_cors removed — CORS handled exclusively by Traefik to avoid duplicate headers
 from flask_socketio import SocketIO
 from flask import Response
 
@@ -613,7 +613,7 @@ register_user_routes(app)
 from email_alert_routes import email_alerts_bp
 app.register_blueprint(email_alerts_bp)
 
-CORS(app)
+# CORS(app) removed — handled by Traefik middleware
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 active_sensors_map = {}

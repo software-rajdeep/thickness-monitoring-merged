@@ -1,5 +1,4 @@
 Flask
-Flask-Cors
 Flask-SocketIO
 psycopg2-binary
 Werkzeug
