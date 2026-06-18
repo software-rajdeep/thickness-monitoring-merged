@@ -28,9 +28,7 @@ export default function RunModePage({
   const calibrationReferenceThickness = thicknessState?.calibration_reference_thickness ?? 0;
   const calibrationCapturedAt = thicknessState?.calibration_captured_at;
   const calibrationBaselines = thicknessState?.calibration_baseline_readings || {};
-  const [localCalibrated, setLocalCalibrated] = useState(false);
-  // If local storage indicates calibrated, respect that even if server refresh hasn't arrived yet
-  const isCalibrated = calibrationActive || localCalibrated || Boolean(thicknessState?.calibration_completed);
+  const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed);
   const sensorOrder = Object.keys(SENSOR_CONFIGS);
   const sensorKeys = { A: "a", B: "b", C: "c" };
 
@@ -48,14 +46,6 @@ export default function RunModePage({
     }
   }, [runModeVisitKey]);
 
-  useEffect(() => {
-    try {
-      const v = window.localStorage.getItem("thicknessmon.calibrated");
-      setLocalCalibrated(Boolean(v));
-    } catch {
-      setLocalCalibrated(false);
-    }
-  }, []);
 
   useEffect(() => {
     if (isCalibrated) {

@@ -42,6 +42,7 @@ DB_TABLE_UNFILTERED = "sensor_unfiltered_readings"
 DB_TABLE_THICKNESS = "opposite_thickness_readings"
 DB_TABLE_THICKNESS_RAW = "opposite_thickness_raw_readings"
 DB_TABLE_USERS = "users"
+DB_TABLE_USER_CALIBRATIONS = "user_calibrations"
 
 LIMIT_FILTERED = 10_000_000
 LIMIT_UNFILTERED = 1_000_000
@@ -466,6 +467,15 @@ def init_db():
             )
         """)
         
+        # User calibrations table — per-user calibration state
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_USER_CALIBRATIONS} (
+                username VARCHAR(50) PRIMARY KEY,
+                calibration_json TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_USERS}")
         if cur.fetchone()[0] == 0:
             print("--- Seeding Default Users into Database ---")
@@ -497,6 +507,81 @@ def get_next_db_id(cursor, table_name, max_rows):
         cursor.execute(f"SELECT id FROM {table_name} ORDER BY timestamp ASC LIMIT 1")
         res = cursor.fetchone()
         return res[0] if res else 1
+
+# ==========================================
+# USER CALIBRATION HELPERS
+# ==========================================
+def save_user_calibration_to_db(username, calibration_state):
+    """Save the given calibration state to the user's DB record."""
+    try:
+        # Strip out runtime-only fields before saving
+        save_data = {
+            "setup_ready": calibration_state.get("setup_ready", False),
+            "captured_at": calibration_state.get("captured_at"),
+            "reference_readings": calibration_state.get("reference_readings", {}),
+            "calibration_completed": calibration_state.get("calibration_completed", False),
+            "calibration_active": calibration_state.get("calibration_active", False),
+            "calibration_captured_at": calibration_state.get("calibration_captured_at"),
+            "calibration_reference_thickness": calibration_state.get("calibration_reference_thickness", 0.0),
+            "calibration_baseline_readings": calibration_state.get("calibration_baseline_readings", {}),
+            "gap_distance": calibration_state.get("gap_distance", 0.0),
+            "auto_gap_active": calibration_state.get("auto_gap_active", False),
+            "object_thickness": calibration_state.get("object_thickness"),
+            "thickness_tolerance_min": calibration_state.get("thickness_tolerance_min"),
+            "thickness_tolerance_max": calibration_state.get("thickness_tolerance_max"),
+        }
+        cal_json = json.dumps(save_data)
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+        cur = conn.cursor()
+        cur.execute(f"""
+            INSERT INTO {DB_TABLE_USER_CALIBRATIONS} (username, calibration_json, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (username) 
+            DO UPDATE SET calibration_json = %s, updated_at = CURRENT_TIMESTAMP
+        """, (username, cal_json, cal_json))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"!!! Failed to save user calibration for {username}: {e} !!!")
+        return False
+
+def load_user_calibration_from_db(username):
+    """Load saved calibration state for a user from DB. Returns None if none exists."""
+    try:
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT calibration_json FROM {DB_TABLE_USER_CALIBRATIONS} WHERE username = %s",
+            (username,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+        return None
+    except Exception as e:
+        print(f"!!! Failed to load user calibration for {username}: {e} !!!")
+        return None
+
+def delete_user_calibration_from_db(username):
+    """Delete saved calibration state for a user from DB."""
+    try:
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+        cur = conn.cursor()
+        cur.execute(
+            f"DELETE FROM {DB_TABLE_USER_CALIBRATIONS} WHERE username = %s",
+            (username,)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"!!! Failed to delete user calibration for {username}: {e} !!!")
+        return False
 
 # ==========================================
 # SENSOR CLASS
@@ -731,6 +816,11 @@ def thickness_calibration():
         if not captured_readings:
             return jsonify({"error": "Unable to capture calibration readings."}), 500
 
+    # Save to user's calibration in DB if username provided
+    username = data.get("username")
+    if username:
+        save_user_calibration_to_db(username, get_thickness_state())
+
     response_payload = {
         "message": "Calibration saved successfully.",
         "calibration_active": True,
@@ -758,6 +848,12 @@ def thickness_gap_set():
     current_state["calibration_completed"] = True
     current_state["calibration_active"] = True
     set_thickness_state(current_state)
+    
+    # Save to user's calibration in DB if username provided
+    username = data.get("username")
+    if username:
+        save_user_calibration_to_db(username, get_thickness_state())
+    
     return jsonify({
         "message": "Gap distance set successfully.",
         "gap_distance": current_state["gap_distance"],
@@ -808,6 +904,12 @@ def thickness_auto_gap_set():
     current_state["thickness_tolerance_min"] = tol_min
     current_state["thickness_tolerance_max"] = tol_max
     set_thickness_state(current_state)
+    
+    # Save to user's calibration in DB if username provided
+    username = data.get("username")
+    if username:
+        save_user_calibration_to_db(username, get_thickness_state())
+    
     response = {
         "message": "Auto-gap setup completed successfully.",
         "gap_distance": round(total_gap, 3),
@@ -825,12 +927,57 @@ def thickness_auto_gap_set():
 @app.route('/thickness/calibration/reset', methods=['POST'])
 def thickness_calibration_reset():
     updated_state = reset_calibration_state()
+    # Also delete user's calibration from DB if username provided
+    data = request.json or {}
+    username = data.get("username")
+    if username:
+        delete_user_calibration_from_db(username)
     return jsonify({
         "message": "Calibration reset successfully.",
         "calibration_active": updated_state.get("calibration_active", False),
         "calibration_reference_thickness": updated_state.get("calibration_reference_thickness", 0.0),
         "calibration_baseline_readings": updated_state.get("calibration_baseline_readings", {}),
         "calibration_captured_at": updated_state.get("calibration_captured_at"),
+    }), 200
+
+@app.route('/thickness/user-calibration', methods=['GET'])
+def get_user_calibration():
+    """Get saved calibration state for a specific user."""
+    username = request.args.get("username")
+    if not username:
+        return jsonify({"error": "username query parameter is required"}), 400
+    cal_data = load_user_calibration_from_db(username)
+    if cal_data:
+        return jsonify(cal_data), 200
+    return jsonify({"calibration_found": False}), 200
+
+@app.route('/thickness/load-user-calibration', methods=['POST'])
+def load_user_calibration():
+    """Load a user's saved calibration into the runtime thickness state."""
+    data = request.json or {}
+    username = data.get("username")
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+    cal_data = load_user_calibration_from_db(username)
+    if cal_data is None:
+        # No saved calibration - reset to defaults
+        reset_calibration_state()
+        return jsonify({
+            "message": f"No saved calibration found for '{username}'.",
+            "calibration_loaded": False,
+            "calibration_active": False,
+        }), 200
+    # Merge saved calibration into current runtime state
+    current = get_thickness_state()
+    for key, value in cal_data.items():
+        if key in current:
+            current[key] = value
+    set_thickness_state(current)
+    return jsonify({
+        "message": f"Calibration loaded for '{username}'.",
+        "calibration_loaded": True,
+        "calibration_active": current.get("calibration_active", False),
+        "calibration_reference_thickness": current.get("calibration_reference_thickness", 0.0),
     }), 200
 
 # ==========================================
@@ -851,10 +998,13 @@ def login():
         cur.close()
         conn.close()
         if user_record and check_password_hash(user_record[0], password):
+            # Check if user has saved calibration
+            has_calibration = load_user_calibration_from_db(username) is not None
             return jsonify({
                 "message": "Login successful", 
                 "username": username,
-                "role": user_record[1] 
+                "role": user_record[1],
+                "has_calibration": has_calibration,
             }), 200
         else:
             return jsonify({"error": "Invalid username or password"}), 401
@@ -998,545 +1148,210 @@ def ingest_readings():
         try:
             socketio.emit('sensor_reading', {
                 "timestamp": ts,
-                "distance_A": round(dist_A, 3) if dist_A is not None else None,
-                "distance_B": round(dist_B, 3) if dist_B is not None else None,
-                "distance_C": round(dist_C, 3) if dist_C is not None else None,
-                "sensor_A":   round(sbs_a, 3)  if sbs_a  is not None else None,
-                "sensor_B":   round(sbs_b, 3)  if sbs_b  is not None else None,
-                "sensor_C":   round(sbs_c, 3)  if sbs_c  is not None else None,
-                "thickness":  round(thickness_val, 3) if thickness_val is not None else None,
+                "sensor_A": sbs_a,
+                "sensor_B": sbs_b,
+                "sensor_C": sbs_c,
+                "distance_A": dist_A,
+                "distance_B": dist_B,
+                "distance_C": dist_C,
+                "thickness": thickness_val,
             })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Socket emit error: {e}")
 
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur = conn.cursor()
-
-        raw_id = get_next_db_id(cur, DB_TABLE_UNFILTERED, LIMIT_UNFILTERED)
-        cur.execute(f"""
-            INSERT INTO {DB_TABLE_UNFILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                timestamp = EXCLUDED.timestamp,
-                sensor_a = EXCLUDED.sensor_a,
-                sensor_b = EXCLUDED.sensor_b,
-                sensor_c = EXCLUDED.sensor_c
-        """, (raw_id, ts, dist_A, dist_B, dist_C))
-
-        fil_id = get_next_db_id(cur, DB_TABLE_FILTERED, LIMIT_FILTERED)
-        cur.execute(f"""
-            INSERT INTO {DB_TABLE_FILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                timestamp = EXCLUDED.timestamp,
-                sensor_a = EXCLUDED.sensor_a,
-                sensor_b = EXCLUDED.sensor_b,
-                sensor_c = EXCLUDED.sensor_c
-        """, (fil_id, ts, sbs_a, sbs_b, sbs_c))
-
-        thick_raw_id = get_next_db_id(cur, DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW)
-        cur.execute(f"""
-            INSERT INTO {DB_TABLE_THICKNESS_RAW} (id, timestamp, sensor_a, sensor_b, thickness)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                timestamp = EXCLUDED.timestamp,
-                sensor_a = EXCLUDED.sensor_a,
-                sensor_b = EXCLUDED.sensor_b,
-                thickness = EXCLUDED.thickness
-        """, (thick_raw_id, ts, dist_A, dist_B, thickness_val))
-
-        thick_id = get_next_db_id(cur, DB_TABLE_THICKNESS, LIMIT_THICKNESS)
-        cur.execute(f"""
-            INSERT INTO {DB_TABLE_THICKNESS} (id, timestamp, sensor_a, sensor_b, thickness)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                timestamp = EXCLUDED.timestamp,
-                sensor_a = EXCLUDED.sensor_a,
-                sensor_b = EXCLUDED.sensor_b,
-                thickness = EXCLUDED.thickness
-        """, (thick_id, ts, dist_A, dist_B, thickness_val))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"message": "ingest_ok", "id": raw_id}), 200
-    except Exception as e:
-        try:
-            fallback_path = os.path.join(BASE_DIR, 'ingest_fallback.jsonl')
-            with open(fallback_path, 'a') as fh:
-                fh.write(json.dumps({"timestamp": ts, "sensor_A": a, "sensor_B": b, "sensor_C": c}) + "\n")
-        except Exception:
-            pass
-        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "ok"}), 200
 
 @app.route('/config/poll', methods=['GET'])
-def config_poll():
-    if INGEST_API_KEY and request.headers.get("X-Api-Key") != INGEST_API_KEY:
-        return jsonify({"error": "unauthorized"}), 401
+def poll_config():
     with pending_config_lock:
         cmds = list(pending_config_commands)
         pending_config_commands.clear()
-    return jsonify({"commands": cmds}), 200
+    if cmds:
+        return jsonify({"commands": cmds, "interval_s": 0.5, "ingest_api_key": INGEST_API_KEY}), 200
+    return jsonify({"commands": [], "interval_s": 2.0}), 200
 
 @app.route('/config/result', methods=['POST'])
-def config_result():
-    if INGEST_API_KEY and request.headers.get("X-Api-Key") != INGEST_API_KEY:
-        return jsonify({"error": "unauthorized"}), 401
-    payload = request.json or {}
-    with pending_config_lock:
-        config_results.append(payload)
-    print(f"[CONFIG RESULT] sensor={payload.get('sensor')} id={payload.get('id')} success={payload.get('success')}")
-    return jsonify({"message": "result received"}), 200
+def post_config_result():
+    data = request.json
+    if data:
+        with pending_config_lock:
+            config_results.append({
+                "id": data.get("id"),
+                "sensor": data.get("sensor"),
+                "status": data.get("status"),
+                "error": data.get("error"),
+            })
+    return jsonify({"status": "ok"}), 200
 
 # ==========================================
-# API - SENSOR STATUS
+# DATABASE STREAM WRITER
 # ==========================================
-@app.route('/sensors/status', methods=['GET'])
-def sensors_status():
-    if CLOUD_MODE:
-        active_ids = [sid for sid, val in last_ingest_reading.items() if val is not None]
-    else:
-        with sensors_lock:
-            active_ids = list(active_sensors_map.keys())
-    status = {}
-    all_sids = list(SENSOR_CONFIGS.keys()) if SENSOR_CONFIGS else list(last_ingest_reading.keys())
-    for sid in all_sids:
-        config = SENSOR_CONFIGS.get(sid, {})
-        status[sid] = {
-            "ip":     config.get("ip", ""),
-            "port":   config.get("port", 8234),
-            "name":   config.get("name", f"Sensor {sid}"),
-            "online": sid in active_ids,
-        }
-    return jsonify(status), 200
-
-# ==========================================
-# API - DOWNLOAD ROUTES
-# ==========================================
-@app.route('/download/filtered', methods=['POST'])
-def download_filtered():
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur  = conn.cursor()
-        cur.execute(f"""
-            SELECT id, timestamp, sensor_a, sensor_b, sensor_c
-            FROM {DB_TABLE_FILTERED}
-            ORDER BY timestamp ASC
-        """)
-        rows = cur.fetchall()
-        rows = sorted(rows, key=lambda x: x[1])
-        cur.close()
-        conn.close()
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness"])
-        writer.writerows(rows)
-        output.seek(0)
-        return Response(
-            output.getvalue(),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=filtered_thickness_data.csv"}
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/download/raw', methods=['POST'])
-def download_raw():
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur  = conn.cursor()
-        cur.execute(f"""
-            SELECT id, timestamp, sensor_a, sensor_b, sensor_c
-            FROM {DB_TABLE_UNFILTERED}
-            ORDER BY timestamp ASC
-        """)
-        rows = cur.fetchall()
-        rows = sorted(rows, key=lambda x: x[1])
-        cur.close()
-        conn.close()
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness"])
-        writer.writerows(rows)
-        output.seek(0)
-        return Response(
-            output.getvalue(),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=unfiltered_thickness_data.csv"}
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/download/thickness/raw', methods=['GET'])
-def download_thickness_raw():
-    """Export opposite_thickness_raw_readings table as CSV."""
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur  = conn.cursor()
-        cur.execute(f"""
-            SELECT id, timestamp, sensor_a, sensor_b, thickness
-            FROM {DB_TABLE_THICKNESS_RAW}
-            ORDER BY timestamp ASC
-        """)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["#", "Timestamp", "Sensor A (mm)", "Sensor B (mm)", "Thickness (mm)"])
-        writer.writerows(rows)
-        output.seek(0)
-        return Response(
-            output.getvalue(),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=thickness_raw_data.csv"}
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/download/thickness', methods=['GET'])
-def download_thickness():
-    """Export opposite_thickness_readings table as CSV."""
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur  = conn.cursor()
-        cur.execute(f"""
-            SELECT id, timestamp, sensor_a, sensor_b, thickness
-            FROM {DB_TABLE_THICKNESS}
-            ORDER BY timestamp ASC
-        """)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["#", "Timestamp", "Sensor A (mm)", "Sensor B (mm)", "Thickness (mm)"])
-        writer.writerows(rows)
-        output.seek(0)
-        return Response(
-            output.getvalue(),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=thickness_data.csv"}
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/db/status', methods=['GET'])
-def db_status():
-    try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        cur  = conn.cursor()
-        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_FILTERED}")
-        filtered_count = cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_UNFILTERED}")
-        unfiltered_count = cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_THICKNESS}")
-        thickness_count = cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_THICKNESS_RAW}")
-        thickness_raw_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM users")
-        users_count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
-        return jsonify({
-            "filtered":   filtered_count,
-            "unfiltered": unfiltered_count,
-            "thickness":  thickness_count,
-            "thickness_raw": thickness_raw_count,
-            "users":      users_count,
-        }), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ==========================================
-# API - SERVER CONFIGURATION
-# ==========================================
-@app.route('/server/config', methods=['GET'])
-def server_config():
-    return jsonify({
-        "sensor_configs":     SENSOR_CONFIGS,
-        "server_port":        SERVER_PORT,
-        "sensor_timeout":     SENSOR_TIMEOUT,
-        "limit_filtered":     LIMIT_FILTERED,
-        "limit_unfiltered":   LIMIT_UNFILTERED,
-        "limit_thickness":    LIMIT_THICKNESS,
-        "limit_thickness_raw": LIMIT_THICKNESS_RAW,
-        "db_host":            DB_HOST,
-        "db_name":            DB_NAME,
-        "thickness_state":    get_thickness_state(),
-    }), 200
-
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve_frontend(path):
-    """Serve the built React frontend from dist/ directory."""
-    from flask import send_from_directory
-    dist_dir = os.path.join(BASE_DIR, '..', 'dist')
-    if path.startswith('socket.io'):
-        from flask import abort
-        abort(404)
-    if path and os.path.exists(os.path.join(dist_dir, path)):
-        return send_from_directory(dist_dir, path)
-    return send_from_directory(dist_dir, 'index.html')
-
-@app.route('/server/network', methods=['GET', 'POST'])
-def server_network():
-    if request.method == 'GET':
-        return jsonify(SENSOR_CONFIGS), 200
-    payload = request.json or {}
-    updated, errors = normalize_network_config(payload, SENSOR_CONFIGS)
-    if errors:
-        return jsonify({"error": "Invalid network config", "details": errors}), 400
-    active_ids = refresh_sensor_configs(updated)
-    return jsonify({
-        "message": "Network config updated",
-        "active_sensors": active_ids,
-        "sensor_configs": SENSOR_CONFIGS,
-    }), 200
-
-# ==========================================
-# WEBSOCKET & DB STREAMING
-# ==========================================
-def calculate_filtered_average(data_batch, trim_pct=10):
-    if not data_batch: return None
-    n = len(data_batch)
-    if n < 3: return sum(data_batch) / n
-    sorted_data = sorted(data_batch)
-    trim_count = max(1, int(n * (trim_pct / 100))) if n > 2 and trim_pct > 0 else 0
-    filtered_data = sorted_data[trim_count:-trim_count] if trim_count > 0 else sorted_data
-    return sum(filtered_data) / len(filtered_data) if filtered_data else 0.0
-
-def background_stream_task():
-    print(">>> Stream Task Started (with PostgreSQL Logging)")
-
-    if CLOUD_MODE:
-        print(">>> CLOUD_MODE: sensor data arrives via /ingest/readings — stream task idling.")
-        while True:
-            socketio.sleep(1)
-        return
-
-    db_conn = None
-    try:
-        db_conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
-        db_cur = db_conn.cursor()
-        unf_id = get_next_db_id(db_cur, DB_TABLE_UNFILTERED, LIMIT_UNFILTERED)
-        fil_id = get_next_db_id(db_cur, DB_TABLE_FILTERED, LIMIT_FILTERED)
-        thick_id = get_next_db_id(db_cur, DB_TABLE_THICKNESS, LIMIT_THICKNESS)
-        thick_raw_id = get_next_db_id(db_cur, DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW)
-    except Exception as e:
-        print(f"!!! DB Connection Failed in Stream Task: {e}")
-        return
-
-    sbs_insert = """
-        INSERT INTO {table} (id, timestamp, sensor_a, sensor_b, sensor_c)
-        VALUES %s
-        ON CONFLICT (id) DO UPDATE SET 
-            timestamp = EXCLUDED.timestamp,
-            sensor_a = EXCLUDED.sensor_a,
-            sensor_b = EXCLUDED.sensor_b,
-            sensor_c = EXCLUDED.sensor_c
-    """
-    opp_insert = """
-        INSERT INTO {table} (id, timestamp, sensor_a, sensor_b, thickness)
-        VALUES %s
-        ON CONFLICT (id) DO UPDATE SET 
-            timestamp = EXCLUDED.timestamp,
-            sensor_a = EXCLUDED.sensor_a,
-            sensor_b = EXCLUDED.sensor_b,
-            thickness = EXCLUDED.thickness
-    """
-    
-    unf_query = sbs_insert.format(table=DB_TABLE_UNFILTERED)
-    fil_query = sbs_insert.format(table=DB_TABLE_FILTERED)
-    thick_query = opp_insert.format(table=DB_TABLE_THICKNESS)
-    thick_raw_query = opp_insert.format(table=DB_TABLE_THICKNESS_RAW)
-
-    def get_trim_pct():
-        try:
-            with open(CONFIG_FILE_PATH, 'r') as f:
-                cfg = json.load(f)
-            return cfg.get("global_settings", {}).get("trim_percentage", 10)
-        except:
-            return 10
-
-    batches = {sid: [] for sid in active_sensors_map.keys()}
-    raw_db_buffer = []
-    thick_raw_db_buffer = []
-    last_emit_time = time.time()
+def stream_to_database():
+    """Background thread: batch-writes sensor readings to PostgreSQL."""
+    BATCH_SIZE = 50
+    FLUSH_INTERVAL = 2.0  # seconds
+    batch_filtered = []
+    batch_unfiltered = []
+    batch_thickness = []
+    batch_thickness_raw = []
+    last_flush = time.time()
 
     while True:
-        if not stream_state["active"]:
-            time.sleep(1)
+        time.sleep(0.1)
+        now = time.time()
+        if (len(batch_filtered) < BATCH_SIZE and
+            len(batch_unfiltered) < BATCH_SIZE and
+            len(batch_thickness) < BATCH_SIZE and
+            len(batch_thickness_raw) < BATCH_SIZE and
+            now - last_flush < FLUSH_INTERVAL):
             continue
 
-        with sensors_lock:
-            sensors_snapshot = dict(active_sensors_map)
+        if batch_filtered:
+            try:
+                conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                cur = conn.cursor()
+                cur.execute(f"SELECT MAX(id) FROM {DB_TABLE_FILTERED}")
+                max_id = cur.fetchone()[0]
+                if max_id is None: max_id = 0
+                start_id = max_id + 1
+                rows_to_insert = []
+                for i, row in enumerate(batch_filtered):
+                    rows_to_insert.append((
+                        start_id + i,
+                        row['ts'],
+                        row.get('a'),
+                        row.get('b'),
+                        row.get('c')
+                    ))
+                if rows_to_insert:
+                    extras.execute_values(
+                        cur,
+                        f"INSERT INTO {DB_TABLE_FILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c) VALUES %s",
+                        rows_to_insert
+                    )
+                    print(f"DB: wrote {len(rows_to_insert)} filtered rows")
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"DB Write Error (filtered): {e}")
+            batch_filtered = []
 
-        if set(sensors_snapshot.keys()) != set(batches.keys()):
-            batches = {sid: batches.get(sid, []) for sid in sensors_snapshot.keys()}
+        if batch_unfiltered:
+            try:
+                conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                cur = conn.cursor()
+                cur.execute(f"SELECT MAX(id) FROM {DB_TABLE_UNFILTERED}")
+                max_id = cur.fetchone()[0]
+                if max_id is None: max_id = 0
+                start_id = max_id + 1
+                rows_to_insert = []
+                for i, row in enumerate(batch_unfiltered):
+                    rows_to_insert.append((
+                        start_id + i,
+                        row['ts'],
+                        row.get('a'),
+                        row.get('b'),
+                        row.get('c')
+                    ))
+                if rows_to_insert:
+                    extras.execute_values(
+                        cur,
+                        f"INSERT INTO {DB_TABLE_UNFILTERED} (id, timestamp, sensor_a, sensor_b, sensor_c) VALUES %s",
+                        rows_to_insert
+                    )
+                    print(f"DB: wrote {len(rows_to_insert)} unfiltered rows")
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"DB Write Error (unfiltered): {e}")
+            batch_unfiltered = []
 
-        all_sensors_failed = True
-        raw_snapshot = {}
+        if batch_thickness:
+            try:
+                conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                cur = conn.cursor()
+                cur.execute(f"SELECT MAX(id) FROM {DB_TABLE_THICKNESS}")
+                max_id = cur.fetchone()[0]
+                if max_id is None: max_id = 0
+                start_id = max_id + 1
+                rows_to_insert = []
+                for i, row in enumerate(batch_thickness):
+                    rows_to_insert.append((
+                        start_id + i,
+                        row['ts'],
+                        row.get('a'),
+                        row.get('b'),
+                        row.get('thickness')
+                    ))
+                if rows_to_insert:
+                    extras.execute_values(
+                        cur,
+                        f"INSERT INTO {DB_TABLE_THICKNESS} (id, timestamp, sensor_a, sensor_b, thickness) VALUES %s",
+                        rows_to_insert
+                    )
+                    print(f"DB: wrote {len(rows_to_insert)} thickness rows")
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"DB Write Error (thickness): {e}")
+            batch_thickness = []
 
-        for sid, sensor in sensors_snapshot.items():
-            val = sensor.get_single_measurement()
-            if val is not None:
-                # Store raw distance for batches (used for opposite mode distance_X and SBS thickness)
-                batches[sid].append(val)
-                raw_snapshot[sid] = val
-                all_sensors_failed = False
-        
-        if all_sensors_failed:
-            time.sleep(0.01)
-        else:
-            mode = get_current_mode()
-            raw_ts = datetime.datetime.now()
-            
-            # Calculate thickness values for both modes
-            sbs_a = calculate_thickness_sbs("A", raw_snapshot.get("A")) if "A" in raw_snapshot else None
-            sbs_b = calculate_thickness_sbs("B", raw_snapshot.get("B")) if "B" in raw_snapshot else None
-            sbs_c = calculate_thickness_sbs("C", raw_snapshot.get("C")) if "C" in raw_snapshot else None
-            
-            # For opposite mode: calculate combined thickness
-            opp_ab = raw_snapshot.get("A"), raw_snapshot.get("B")
-            opp_thickness = calculate_opposite_thickness(opp_ab[0], opp_ab[1])
-            
-            raw_db_buffer.append((
-                unf_id, 
-                raw_ts, 
-                raw_snapshot.get("A"), 
-                raw_snapshot.get("B"), 
-                raw_snapshot.get("C")
-            ))
-            unf_id = (unf_id % LIMIT_UNFILTERED) + 1
-            
-            thick_raw_db_buffer.append((
-                thick_raw_id,
-                raw_ts,
-                raw_snapshot.get("A"),
-                raw_snapshot.get("B"),
-                opp_thickness
-            ))
-            thick_raw_id = (thick_raw_id % LIMIT_THICKNESS_RAW) + 1
+        if batch_thickness_raw:
+            try:
+                conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                cur = conn.cursor()
+                cur.execute(f"SELECT MAX(id) FROM {DB_TABLE_THICKNESS_RAW}")
+                max_id = cur.fetchone()[0]
+                if max_id is None: max_id = 0
+                start_id = max_id + 1
+                rows_to_insert = []
+                for i, row in enumerate(batch_thickness_raw):
+                    rows_to_insert.append((
+                        start_id + i,
+                        row['ts'],
+                        row.get('a'),
+                        row.get('b'),
+                        row.get('thickness')
+                    ))
+                if rows_to_insert:
+                    extras.execute_values(
+                        cur,
+                        f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (id, timestamp, sensor_a, sensor_b, thickness) VALUES %s",
+                        rows_to_insert
+                    )
+                    print(f"DB: wrote {len(rows_to_insert)} thickness_raw rows")
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"DB Write Error (thickness_raw): {e}")
+            batch_thickness_raw = []
 
-        current_time = time.time()
-        if current_time - last_emit_time >= (1.0 / stream_state["target_rate_hz"]):
-            # Build payload with ALL fields that both modes need
-            payload = {"timestamp": datetime.datetime.now().isoformat()}
-            has_data = False
-            
-            trim_pct = get_trim_pct()
-            for sid in sensors_snapshot.keys():
-                if batches[sid]:
-                    # Raw distance (for opposite mode)
-                    distance_val = round(calculate_filtered_average(batches[sid], trim_pct), 3)
-                    payload[f"distance_{sid}"] = distance_val
-                    # Thickness (for SBS mode) - calculated from raw measurement
-                    thickness_val = calculate_thickness_sbs(sid, distance_val)
-                    payload[f"sensor_{sid}"] = round(thickness_val, 3) if thickness_val is not None else distance_val
-                    batches[sid] = []
-                    has_data = True
-                else:
-                    payload[f"sensor_{sid}"] = None
-                    payload[f"distance_{sid}"] = None
+        last_flush = now
 
-            if has_data:
-                # Calculate thickness for opposite mode
-                dist_a = payload.get("distance_A")
-                dist_b = payload.get("distance_B")
-                payload["thickness"] = calculate_opposite_thickness(dist_a, dist_b)
-
-                fil_ts = datetime.datetime.now()
-                
-                # Write to SBS tables
-                fil_tuple_sbs = [(
-                    fil_id,
-                    fil_ts,
-                    payload.get("sensor_A"),
-                    payload.get("sensor_B"),
-                    payload.get("sensor_C")
-                )]
-                
-                # Write to opposite tables
-                fil_tuple_opp = [(
-                    fil_id,
-                    fil_ts,
-                    dist_a,
-                    dist_b,
-                    payload.get("thickness")
-                )]
-                
-                try:
-                    extras.execute_values(db_cur, fil_query, fil_tuple_sbs)
-                    fil_id = (fil_id % LIMIT_FILTERED) + 1
-                    
-                    extras.execute_values(db_cur, thick_query, fil_tuple_opp)
-                    thick_id = (thick_id % LIMIT_THICKNESS) + 1
-                    
-                    if raw_db_buffer:
-                        extras.execute_values(db_cur, unf_query, raw_db_buffer)
-                        raw_db_buffer = []
-                    
-                    if thick_raw_db_buffer:
-                        extras.execute_values(db_cur, thick_raw_query, thick_raw_db_buffer)
-                        thick_raw_db_buffer = []
-                        
-                    db_conn.commit()
-                except Exception as e:
-                    print(f"DB Write Error: {e}")
-                    db_conn.rollback()
-
-                socketio.emit('sensor_reading', payload)
-
-            last_emit_time = current_time
-        
-        socketio.sleep(0.001)
-
-# --- CONNECTION HANDLING ---
-@socketio.on('connect')
-def handle_connect():
-    stream_state["connected_clients"] += 1
-    print(f">>> Client Connected: {request.sid} | Total Clients: {stream_state['connected_clients']}")
-    stream_state["active"] = True
-    
-    if stream_state["thread"] is None:
-        stream_state["thread"] = socketio.start_background_task(background_stream_task)
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    stream_state["connected_clients"] = max(0, stream_state["connected_clients"] - 1)
-    print(f"<<< Client Disconnected: {request.sid} | Total Clients: {stream_state['connected_clients']}")
-    if stream_state["connected_clients"] == 0:
-        print("--- No active clients. Pausing sensor stream. ---")
-        stream_state["active"] = False
-
-if __name__ == '__main__':
-    print("==================================================")
-    print("        STARTING MERGED API SERVER")
-    print("        Supports both Side-by-Side & Opposite modes")
-    print("==================================================")
-    
-    init_db()
-    init_config_file()
+# ==========================================
+# MAIN
+# ==========================================
+if __name__ == "__main__":
+    print("--- Initializing thickness state... ---")
     init_thickness_state_file()
-    init_network_config_file()
-
-    if CLOUD_MODE:
-        print("CLOUD_MODE=true — skipping local sensor detection. Pi will POST data via /ingest/readings.")
+    
+    print("--- Initializing databases... ---")
+    init_db()
+    
+    if not CLOUD_MODE:
+        print("--- Refreshing sensor configs... ---")
+        online_sensors = refresh_sensor_configs()
+        print(f"--- Online sensors: {online_sensors} ---")
+        
+        print("--- Starting database stream writer thread... ---")
+        db_thread = threading.Thread(target=stream_to_database, daemon=True)
+        db_thread.start()
     else:
-        print("Detecting hardware configuration...")
-        refresh_sensor_configs()
-        mode = get_current_mode()
-        print(f"Detected mode: {mode.upper()}")
-        print(f"Active Sensors: {list(active_sensors_map.keys())}")
-
-    print(f"CLOUD_MODE: {CLOUD_MODE}")
-    print(f"Listening on {SERVER_IP}:{SERVER_PORT}")
-    print("==================================================")
-
-    try:
-        socketio.run(app, host=SERVER_IP, port=SERVER_PORT, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
-    except KeyboardInterrupt:
-        for sensor in active_sensors_map.values():
-            sensor.disconnect()
+        print("--- Running in CLOUD_MODE ---")
+    
+    print(f"--- Starting Flask + SocketIO on 0.0.0.0:{SERVER_PORT} ---")
+    socketio.run(app, host=SERVER_IP, port=SERVER_PORT, debug=False, allow_unsafe_werkzeug=True)

@@ -87,7 +87,10 @@ export default function App() {
       const response = await fetch(`${SERVER}/thickness/calibration`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_thickness: referenceThickness }),
+        body: JSON.stringify({
+          reference_thickness: referenceThickness,
+          username: user?.username,
+        }),
       });
       const data = await response.json();
 
@@ -97,8 +100,6 @@ export default function App() {
       }
 
       await refreshThicknessState();
-      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
-      try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
       const warningText = data.warnings?.length ? ` ${data.warnings.join(" ")}` : "";
       showToast(`${data.message}${warningText}`, data.warnings?.length ? "error" : "success");
       return true;
@@ -115,6 +116,8 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user?.username }),
       });
       const data = await response.json();
 
@@ -124,7 +127,6 @@ export default function App() {
       }
 
       await refreshThicknessState();
-      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
       showToast(data.message || "Calibration reset successfully", "success");
       return true;
     } catch {
@@ -146,6 +148,7 @@ export default function App() {
           object_thickness: objectThickness,
           thickness_tolerance_min: toleranceMin || null,
           thickness_tolerance_max: toleranceMax || null,
+          username: user?.username,
         }),
       });
       const data = await response.json();
@@ -156,8 +159,6 @@ export default function App() {
       }
 
       await refreshThicknessState();
-      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
-      try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
       showToast(data.message || "Auto-gap setup successfully", "success");
       return true;
     } catch {
@@ -174,7 +175,10 @@ export default function App() {
       const response = await fetch(`${SERVER}/thickness/gap`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ gap_distance: gapDistance }),
+        body: JSON.stringify({
+          gap_distance: gapDistance,
+          username: user?.username,
+        }),
       });
       const data = await response.json();
 
@@ -184,8 +188,6 @@ export default function App() {
       }
 
       await refreshThicknessState();
-      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
-      try { window.localStorage.setItem("thicknessmon.calibrated", "1"); } catch {}
       showToast(data.message || "Gap distance set successfully", "success");
       return true;
     } catch {
@@ -201,6 +203,8 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user?.username }),
       });
       const data = await response.json();
 
@@ -210,7 +214,6 @@ export default function App() {
       }
 
       await refreshThicknessState();
-      try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
       showToast(data.message || "Reset successfully", "success");
       return true;
     } catch {
@@ -291,19 +294,25 @@ export default function App() {
   }
 
   // ── Login / Logout ───────────────────────────────────────────────────────
-  function handleLogin(u) {
+  async function handleLogin(u) {
     setUser(u);
     setPage("dashboard");
+    // Load user's saved calibration into runtime state
+    try {
+      await fetch(`${SERVER}/thickness/load-user-calibration`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.username }),
+      });
+    } catch {
+      // If server unavailable, continue without loading calibration
+    }
+    await loadThicknessState();
   }
 
   async function handleLogout() {
-    try {
-      await fetch(`${SERVER}/thickness/calibration/reset`, {
-        method: "POST",
-      });
-    } catch {
-      // Logging out should still clear the local session even if the server is unavailable.
-    }
+    // Do NOT reset calibration on logout — we save per-user calibration
+    // so it persists across sessions. Calibration state stays in the runtime.
 
     disconnectSocket();
     setUser(null);

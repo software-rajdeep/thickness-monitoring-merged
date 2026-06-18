@@ -35,8 +35,7 @@ export default function RunModePage({
   const gapDistance = thicknessState?.gap_distance || 0;
   const calibrationActive = Boolean(thicknessState?.calibration_active);
   const autoGapActive = Boolean(thicknessState?.auto_gap_active);
-  const [localCalibrated, setLocalCalibrated] = useState(false);
-  const isCalibrated = calibrationActive || localCalibrated;
+  const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed);
 
   const canvasRef = useRef(null);
   const WINDOW = 100;
@@ -48,14 +47,6 @@ export default function RunModePage({
   // Get last 100 thickness readings for the history table
   const thicknessHistory = [...rows].reverse().slice(0, 100).filter(r => r.thickness !== null);
 
-  useEffect(() => {
-    try {
-      const v = window.localStorage.getItem("thicknessmon.calibrated");
-      setLocalCalibrated(Boolean(v));
-    } catch {
-      setLocalCalibrated(false);
-    }
-  }, []);
 
   useEffect(() => {
     if (!isCalibrated) {
@@ -210,7 +201,7 @@ export default function RunModePage({
 
     // Min limit line
     if (limitActive && !isNaN(mn) && mn >= min && mn <= max) {
-      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.strokeStyle = "rgba(236, 7, 7, 0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -222,7 +213,7 @@ export default function RunModePage({
 
     // Max limit line
     if (limitActive && !isNaN(mx) && mx >= min && mx <= max) {
-      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.strokeStyle = "rgba(255, 4, 4, 0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
