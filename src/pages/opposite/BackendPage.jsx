@@ -66,7 +66,7 @@ export default function BackendPage({ user }) {
 
   async function fetchServerConfig() {
     try {
-      const res  = await fetch(`${SERVER}/server/config`);
+      const res  = await fetch(`${SERVER}/server/config?mode=opposite`);
       const data = await res.json();
       setSrvConfig(data);
     } catch {

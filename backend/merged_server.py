@@ -724,9 +724,18 @@ _ingest_emit_lock = threading.Lock()
 # ==========================================
 @app.route('/server/config', methods=['GET'])
 def get_server_config():
-    """Return the current server configuration for both SBS and Opposite modes."""
+    """Return the current server configuration.
+    Supports optional ?mode=opposite to filter sensor_configs to only A & B.
+    Default (?mode=sbs or omitted) returns all sensors A, B, C.
+    """
+    mode = request.args.get("mode", "sbs").lower()
+    if mode == "opposite":
+        filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B"}}
+    else:
+        filtered_configs = dict(SENSOR_CONFIGS)
+
     return jsonify({
-        "sensor_configs": SENSOR_CONFIGS,
+        "sensor_configs": filtered_configs,
         "server_port": SERVER_PORT,
         "sensor_timeout": SENSOR_TIMEOUT,
         "limit_filtered": LIMIT_FILTERED,
