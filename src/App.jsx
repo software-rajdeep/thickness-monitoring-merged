@@ -336,6 +336,13 @@ export default function App() {
     }
   }, [page]);
 
+  // ── Auto-start live reading when visiting run-mode ──
+  useEffect(() => {
+    if (page === "run-mode" && !socketRef.current) {
+      connectSocket();
+    }
+  }, [page]);
+
   useEffect(() => {
     return () => {
       if (socketRef.current) socketRef.current.disconnect();

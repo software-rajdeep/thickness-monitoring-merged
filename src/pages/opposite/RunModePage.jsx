@@ -407,9 +407,6 @@ export default function RunModePage({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {live && connected && <div className="live-dot"><div className="dot" /> LIVE</div>}
-            <button className={live ? "btn btn-red" : "btn btn-green"} onClick={onToggle}>
-              {live ? <><Ic.X /> Stop</> : <><Ic.Refresh /> Start Live</>}
-            </button>
           </div>
         </div>
       </div>
@@ -432,7 +429,7 @@ export default function RunModePage({
             width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
             background: connected ? "var(--green)" : "var(--text-3)",
           }} />
-          {connected ? "Connected" : 'Disconnected - Press "Start Live" to connect'}
+          {connected ? "Connected" : "Disconnected · Waiting for server connection..."}
         </div>
       </div>
 
@@ -648,7 +645,7 @@ export default function RunModePage({
             textAlign: "center", color: "var(--text-3)",
             fontFamily: "var(--mono)", fontSize: 13,
           }}>
-            No thickness data yet - configure the sensor gap and press "Start Live"
+            No thickness data yet — configure the sensor gap and waiting for readings...
           </div>
         ) : (
           <div className="table-wrap scroll-table" style={{ maxHeight: 400 }}>
