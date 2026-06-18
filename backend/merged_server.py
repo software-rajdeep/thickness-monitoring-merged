@@ -863,13 +863,14 @@ def ingest_data():
     data = request.json
     if not data:
         return jsonify({"error": "No data provided"}), 400
-    a = data.get("A")
-    b = data.get("B")
-    c = data.get("C")
+    # Normalize keys: accept sensor_A, sensor_B, sensor_C OR A, B, C
+    a = data.get("A") if "A" in data else data.get("sensor_A")
+    b = data.get("B") if "B" in data else data.get("sensor_B")
+    c = data.get("C") if "C" in data else data.get("sensor_C")
     now = datetime.datetime.now()
-    last_ingest_reading["A"] = a
-    last_ingest_reading["B"] = b
-    last_ingest_reading["C"] = c
+    last_ingest_reading["A"] = float(a) if a is not None else None
+    last_ingest_reading["B"] = float(b) if b is not None else None
+    last_ingest_reading["C"] = float(c) if c is not None else None
     return jsonify({"message": "Data received", "timestamp": now.isoformat()}), 200
 
 # ==========================================
