@@ -720,6 +720,24 @@ _last_ingest_emit_time = 0.0
 _ingest_emit_lock = threading.Lock()
 
 # ==========================================
+# APIS - SERVER CONFIG (missing endpoint that frontends expect)
+# ==========================================
+@app.route('/server/config', methods=['GET'])
+def get_server_config():
+    """Return the current server configuration for both SBS and Opposite modes."""
+    return jsonify({
+        "sensor_configs": SENSOR_CONFIGS,
+        "server_port": SERVER_PORT,
+        "sensor_timeout": SENSOR_TIMEOUT,
+        "limit_filtered": LIMIT_FILTERED,
+        "limit_unfiltered": LIMIT_UNFILTERED,
+        "limit_thickness": LIMIT_THICKNESS,
+        "limit_thickness_raw": LIMIT_THICKNESS_RAW,
+        "db_host": DB_HOST,
+        "db_name": DB_NAME,
+    }), 200
+
+# ==========================================
 # APIS - CONFIG FILE SYNC
 # ==========================================
 @app.route('/config/file', methods=['GET', 'POST'])
