@@ -157,7 +157,7 @@ export default function RunModePage({
 
     // Min limit line
     if (limitActive && !isNaN(mn) && mn >= min && mn <= max) {
-      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.strokeStyle = "rgba(220,50,50,0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -169,7 +169,7 @@ export default function RunModePage({
 
     // Max limit line
     if (limitActive && !isNaN(mx) && mx >= min && mx <= max) {
-      ctx.strokeStyle = "rgba(138,98,98,0.6)";
+      ctx.strokeStyle = "rgba(220,50,50,0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -198,7 +198,7 @@ export default function RunModePage({
       );
       ctx.beginPath();
       ctx.arc(xPos(i), yPos(v), 2, 0, Math.PI * 2);
-      ctx.fillStyle = inLimit ? "#3B55A8" : "#8a6262";
+      ctx.fillStyle = inLimit ? "#3B55A8" : "#dc3232";
       ctx.fill();
     });
   }

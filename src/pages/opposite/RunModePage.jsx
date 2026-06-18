@@ -242,7 +242,7 @@ export default function RunModePage({
       );
       ctx.beginPath();
       ctx.arc(xPos(i), yPos(v), 2, 0, Math.PI * 2);
-      ctx.fillStyle = inLimit ? "#3B55A8" : "#8a6262";
+      ctx.fillStyle = inLimit ? "#3B55A8" : "#dc3232";
       ctx.fill();
     });
   }
