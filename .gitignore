@@ -40,3 +40,8 @@ e2e_check.py
 finalize_*.py
 deploy_ubuntu.py
 temp_*.py
+
+# Runtime config and local artifacts
+backend/venv/
+.vercel/
+backend/email_alert_config.json
