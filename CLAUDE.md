@@ -1,17 +1,36 @@
 # Thickness Monitoring System — Merged App
 
-This is the single unified thickness monitoring application for Rajdeep Analytics.
-It runs in two sensor modes (Side-by-Side and Opposite) from one backend and one React frontend.
+Single unified thickness monitoring app for Rajdeep Analytics.
+Two sensor modes (Side-by-Side and Opposite) from one Flask backend and one React frontend.
 
 ---
 
-## How Changes Work — The Golden Rule
+## Primary Development Machine
 
-| What you change | How it goes live |
-|-----------------|-----------------|
-| **Frontend** (`src/`, `index.html`, `vite.config.js`, `.env.production`) | `git push` to GitHub → Vercel auto-deploys. Nothing else needed. |
-| **Backend** (`backend/*.py`) | Run `python deploy.py` from this machine. It SSHes into the KVM, uploads files, and restarts the Flask service. |
-| **pi_client** (`backend/pi_client.py`) | Run `python deploy.py` — it also SSHes into this Ubuntu PC and restarts `pi-merged-client.service`. |
+**All editing, committing, and deploying happens on the Ubuntu PC.**
+
+| | |
+|-|---|
+| **IP** | `192.168.5.13` |
+| **SSH user** | `linux` |
+| **SSH password / sudo** | `linux` |
+| **Repo path** | `~/merged-version` |
+
+This is the machine that also runs the `pi-merged-client` service (sensor reader).
+The Windows machine at `192.168.5.10` is where Claude Code runs — it SSHes into
+the Ubuntu PC to make changes.
+
+---
+
+## How Changes Go Live
+
+| What you change | How to deploy |
+|-----------------|---------------|
+| **Frontend** (`src/`, `index.html`, `vite.config.js`, `.env.production`) | `git push origin main` → Vercel auto-deploys in ~60 s. Nothing else needed. |
+| **Backend** (`backend/*.py`, `backend/*.json`) | `npm run build && python3 deploy.py` — builds frontend, SSHes into KVM, uploads files, restarts Flask service. |
+| **pi_client** (`backend/pi_client.py`) | `python3 deploy.py` — also SSHes into Ubuntu PC itself and restarts `pi-merged-client.service`. |
+| **nginx config** (`nginx_merged.conf`) | `python3 deploy.py` — uploads and reloads nginx on KVM. |
+| **CORS allowed origins** | Edit `/root/traefik-conf/merged.yml` on KVM directly — Traefik hot-reloads, no restart needed. |
 
 ---
 
@@ -21,24 +40,24 @@ It runs in two sensor modes (Side-by-Side and Opposite) from one backend and one
 CD22 Sensors (LAN 192.168.1.x)
         │  TCP binary protocol port 8234
         ▼
-Ubuntu PC — 192.168.5.13  (YOU ARE HERE — development machine)
-  ~/merged-version/          ← the repo, work here
+Ubuntu PC — 192.168.5.13  (primary dev + pi_client machine)
+  ~/merged-version/          ← repo lives here
   systemd: pi-merged-client  ← runs backend/pi_client.py, always-on
         │
-        │  POST /ingest/readings   API key: merged-secret-2026
+        │  POST /ingest/readings   (API key: merged-secret-2026)
         │  GET  /config/poll       (picks up sensor write commands)
         ▼
 KVM Cloud Server — 194.164.148.145
-  Flask backend (merged_server.py)  port 5002   CLOUD_MODE=true
-  nginx                             port 8082   HTTP reverse proxy → :5002
-  Traefik (Docker)                  port 443    HTTPS → :5002
-  PostgreSQL                        port 5432   database: sensor_db
+  Flask (merged_server.py)   port 5002   CLOUD_MODE=true
+  nginx                      port 8082   HTTP reverse proxy → :5002
+  Traefik (Docker)           port 443    HTTPS + CORS → :5002
+  PostgreSQL                 port 5432   database: sensor_db
         ▲
         │  HTTPS + WebSocket   wss://194-164-148-145.sslip.io
         ▼
-Vercel — https://[app].vercel.app
-  Built from GitHub main branch automatically
-  VITE_SERVER_URL = https://194-164-148-145.sslip.io  (in .env.production)
+Vercel — https://merged-version.vercel.app
+  Auto-built from GitHub main branch
+  VITE_SERVER_URL = https://194-164-148-145.sslip.io  (baked in at build time)
 ```
 
 ---
@@ -47,22 +66,23 @@ Vercel — https://[app].vercel.app
 
 **GitHub:** `https://github.com/software-rajdeep/thickness-monitoring-merged`
 **Branch:** `main`
+**Credentials in remote URL** — push works directly without separate auth.
 
 ```bash
+# On Ubuntu PC:
 cd ~/merged-version
-git pull origin main          # get latest (may need VPN if router blocks GitHub)
-git add -p                    # stage changes
-git commit -m "your message"
+git pull origin main
+git add src/some_file.jsx
+git commit -m "describe what changed and why"
 git push origin main          # triggers Vercel redeploy automatically
 ```
 
-> If `git pull` fails with a redirect/SSL error, the router is intercepting GitHub.
-> Workaround: `git config --global http.sslVerify false` then try again,
-> or hotspot from a phone and pull then.
+> If `git pull` fails with SSL/redirect error, the router is intercepting GitHub.
+> Fix: `git config --global http.sslVerify false` then retry, or use phone hotspot.
 
 ---
 
-## KVM Cloud Server — Full Details
+## KVM Cloud Server
 
 ### Access
 
@@ -71,11 +91,11 @@ git push origin main          # triggers Vercel redeploy automatically
 | **IP** | `194.164.148.145` |
 | **SSH user** | `root` |
 | **SSH password** | `Federer7roger@` |
-| **HTTP (LAN/direct)** | `http://194.164.148.145:8082` |
-| **HTTPS (public/Vercel)** | `https://194-164-148-145.sslip.io` |
+| **HTTP (direct)** | `http://194.164.148.145:8082` |
+| **HTTPS (public)** | `https://194-164-148-145.sslip.io` |
 
 ```bash
-ssh root@194.164.148.145   # password: Federer7roger@
+ssh root@194.164.148.145
 ```
 
 ### Flask Backend Service
@@ -83,151 +103,176 @@ ssh root@194.164.148.145   # password: Federer7roger@
 | | |
 |-|---|
 | **systemd unit** | `merged.service` |
-| **source on KVM** | `/opt/merged/backend/` |
-| **built frontend on KVM** | `/opt/merged/dist/` |
+| **source** | `/opt/merged/backend/` |
+| **frontend dist** | `/opt/merged/dist/` |
 | **Python venv** | `/opt/merged/venv/` |
 | **runs as** | `www-data` |
 | **port** | `5002` |
-| **env: CLOUD_MODE** | `true` |
-| **env: INGEST_API_KEY** | `merged-secret-2026` |
-| **env: SERVER_PORT** | `5002` |
+| **CLOUD_MODE** | `true` |
+| **INGEST_API_KEY** | `merged-secret-2026` |
 
 ```bash
 # On KVM:
-systemctl status merged          # check status
-systemctl restart merged         # restart
-journalctl -u merged -f          # live logs
-journalctl -u merged -n 50       # last 50 lines
-ss -tlnp | grep 5002             # confirm port is listening
+systemctl status merged
+systemctl restart merged
+journalctl -u merged -f
+journalctl -u merged -n 50
+ss -tlnp | grep 5002
 ```
 
 ### Database (PostgreSQL on KVM)
 
 | | |
 |-|---|
-| **host** | `localhost` (on KVM) |
 | **database** | `sensor_db` |
 | **user** | `rapl` |
 | **password** | `rapl2026` |
 
 ```bash
-# On KVM:
-psql -U rapl -d sensor_db
-# then: \dt   to list tables
+psql -U rapl -d sensor_db   # then \dt to list tables
 ```
 
 Tables:
-- `sensor_filtered_readings` — SBS mode, trimmed thickness (sensor_a, sensor_b, sensor_c)
-- `sensor_unfiltered_readings` — SBS mode, raw distances
-- `opposite_thickness_readings` — Opposite mode, filtered (sensor_a, sensor_b, thickness)
-- `opposite_thickness_raw_readings` — Opposite mode, raw
+- `sensor_filtered_readings` — SBS mode filtered (sensor_a, sensor_b, sensor_c)
+- `sensor_unfiltered_readings` — SBS mode raw distances
+- `opposite_thickness_readings` — Opposite mode filtered (sensor_a, sensor_b, thickness)
+- `opposite_thickness_raw_readings` — Opposite mode raw
 - `users` — login accounts
 
 ### nginx on KVM
 
 | | |
 |-|---|
-| **config file** | `/etc/nginx/sites-available/merged` |
+| **config** | `/etc/nginx/sites-available/merged` |
 | **port** | `8082` |
 | **proxies to** | `http://127.0.0.1:5002` |
 
 ```bash
-# On KVM:
-nginx -t                          # test config
-systemctl reload nginx            # apply config changes
+nginx -t && systemctl reload nginx
 ```
 
-Config is uploaded by `deploy.py` from `nginx_merged.conf` in this repo.
+> **Do not add HTTPS or CORS headers to nginx_merged.conf.**
+> Traefik handles both. nginx only needs to proxy port 8082 → 5002.
 
-### Traefik (Docker) on KVM — handles HTTPS
+### Traefik (Docker) — HTTPS and CORS
 
-Traefik owns ports 80 and 443. It automatically gets a Let's Encrypt certificate
-for `194-164-148-145.sslip.io` and forwards HTTPS traffic to the Flask backend.
-
-| | |
-|-|---|
-| **config file on KVM** | `/root/traefik-conf/merged.yml` |
-| **docker-compose** | `/root/docker-compose.yml` |
-| **routes** | `https://194-164-148-145.sslip.io` → `http://host.docker.internal:5002` |
+Traefik owns ports 80 and 443, terminates TLS, and is the **sole CORS authority**.
+Config file on KVM: `/root/traefik-conf/merged.yml`
 
 ```yaml
-# /root/traefik-conf/merged.yml  (already configured — do not delete)
-http:
-  routers:
-    merged-backend:
-      rule: "Host(\"194-164-148-145.sslip.io\")"
-      entryPoints: [websecure]
-      tls:
-        certResolver: mytlschallenge
-      service: merged-backend
-  services:
-    merged-backend:
-      loadBalancer:
-        servers:
-          - url: "http://host.docker.internal:5002"
+middlewares:
+  cors-headers:
+    headers:
+      accessControlAllowOriginList:
+        - "https://merged-version.vercel.app"
+        - "https://finalwebapp.vercel.app"
+        - "https://194-164-148-145.sslip.io"
+        - "http://localhost:5173"
+        - "http://localhost:5002"
+      accessControlAllowMethods: ["GET","POST","PUT","DELETE","OPTIONS","PATCH"]
+      accessControlAllowHeaders: ["*"]
+      accessControlAllowCredentials: true
 ```
 
-> **Do not add HTTPS to nginx_merged.conf.** Traefik handles all HTTPS. nginx only needs port 8082.
+**To add a new allowed origin** (e.g. a new Vercel preview URL):
+```bash
+# On KVM — edit the list then save. Traefik hot-reloads immediately, no restart.
+nano /root/traefik-conf/merged.yml
+```
 
-### Files Deployed to KVM
+**Why Flask-CORS was removed:** Both Flask-CORS and Traefik were setting
+`Access-Control-Allow-Origin` independently. Any origin in both lists got the
+header twice, which browsers hard-reject. Flask-CORS is gone; Traefik is the
+only CORS layer. Do not re-add `Flask-CORS` or `CORS(app)` to `merged_server.py`.
 
-`deploy.py` uploads these files to `/opt/merged/backend/` on the KVM:
-- `merged_server.py`
-- `user_routes.py`
-- `download_routes.py`
-- `email_alert_routes.py`
-- `sensor_config.json`
-- `sensor_network.json`
+### Files Deployed to KVM by deploy.py
 
-And uploads the built frontend `dist/` to `/opt/merged/dist/`.
-And uploads `thickness-monitor.service` to `/etc/systemd/system/merged.service`.
+Uploaded to `/opt/merged/backend/`:
+- `merged_server.py`, `user_routes.py`, `download_routes.py`, `email_alert_routes.py`
+- `sensor_config.json`, `sensor_network.json`
+
+Uploaded to `/opt/merged/dist/`: built frontend from `dist/`
+
+Uploaded to `/etc/systemd/system/merged.service`: `thickness-monitor.service`
 
 ---
 
-## Ubuntu PC — pi_client Setup
-
-### This Machine
-
-| | |
-|-|---|
-| **IP** | `192.168.5.13` |
-| **SSH user** | `linux` |
-| **SSH password** | `linux` |
-| **sudo password** | `linux` |
+## Ubuntu PC — pi_client and Networking
 
 ### pi_client Service
 
 | | |
 |-|---|
 | **systemd unit** | `pi-merged-client.service` |
-| **script** | `/home/linux/merged-client/pi_client.py` |
-| **sensor config** | `/home/linux/merged-client/sensor_network.json` |
+| **script** | `/home/linux/merged-version/backend/pi_client.py` |
+| **sensor config** | `/home/linux/merged-version/backend/sensor_network.json` |
 | **posts to** | `http://194.164.148.145:8082/ingest/readings` |
 | **API key** | `merged-secret-2026` |
 | **rate** | 5 Hz |
 
 ```bash
-sudo systemctl status pi-merged-client    # check
-sudo systemctl restart pi-merged-client   # restart
-sudo journalctl -u pi-merged-client -f    # live logs
+sudo systemctl status pi-merged-client
+sudo systemctl restart pi-merged-client
+sudo journalctl -u pi-merged-client -f
 ```
+
+The service file (`/etc/systemd/system/pi-merged-client.service`) runs
+`/home/linux/add-kvm-route.sh` as root via `ExecStartPre` before starting.
+That script ensures the route to the KVM is in place on every start.
+
+### Ubuntu PC Network Setup (Important)
+
+The Ubuntu PC has two network interfaces:
+
+| Interface | Network | Purpose |
+|-----------|---------|---------|
+| `enp3s0` (wired) | `192.168.1.x` | Connects to CD22 sensors |
+| `wlx002e2d1034b9` (WiFi) | `192.168.5.x` | Internet access → KVM |
+
+**The wired router (`192.168.1.1`) has no internet.** It only serves the sensor
+LAN. Without intervention, Linux picks the wired interface as the default route
+(lower metric), which blocks all traffic to the KVM.
+
+Two permanent fixes are in place:
+
+1. **NetworkManager profile** — `Wired connection 1` has `ipv4.never-default yes`
+   so it never takes the default route. `VIRUSRSS2.4 2` (WiFi) has a static route
+   to `194.164.148.145/32` via `192.168.5.1` baked into the connection profile.
+
+2. **Service ExecStartPre** — `/home/linux/add-kvm-route.sh` adds the KVM route
+   before pi_client starts (belt-and-suspenders).
+
+If the KVM becomes unreachable from the Ubuntu PC, check:
+```bash
+ip route show                          # should show 194.164.148.145 via 192.168.5.1
+ping 194.164.148.145                   # should respond
+sudo ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9
+```
+
+### email_alert_config.json
+
+This file stores Gmail OAuth tokens and is **gitignored** — it lives only on disk
+at `/home/linux/merged-version/backend/email_alert_config.json`.
+It is NOT in the repo. Do not commit it. deploy.py does not touch it on the KVM
+(the KVM has its own copy managed via the email alerts UI).
 
 ---
 
-## Vercel Frontend — Full Details
+## Vercel Frontend
 
 | | |
 |-|---|
-| **Repo** | `github.com/software-rajdeep/thickness-monitoring-merged` |
-| **Branch** | `main` |
+| **URL** | `https://merged-version.vercel.app` |
+| **Repo / branch** | `main` |
 | **Build command** | `npm run build` |
 | **Output dir** | `dist` |
-| **Backend URL (baked in)** | `https://194-164-148-145.sslip.io` (from `.env.production`) |
+| **Backend URL** | `https://194-164-148-145.sslip.io` (from `.env.production`) |
 
-**Vercel redeploys automatically on every push to `main`.**
-No manual steps needed for frontend changes — just `git push`.
+Vercel redeploys automatically on every push to `main`. No manual steps needed
+for frontend-only changes.
 
-The frontend connects to the backend at `https://194-164-148-145.sslip.io` for all API calls and WebSocket. This is set in `.env.production` as `VITE_SERVER_URL` and baked into the bundle at build time by Vite.
+The backend URL is baked into the bundle at build time by Vite via `VITE_SERVER_URL`.
+To change the backend URL, edit `.env.production` and push.
 
 ---
 
@@ -236,103 +281,98 @@ The frontend connects to the backend at `https://194-164-148-145.sslip.io` for a
 ```
 ~/merged-version/
 ├── backend/
-│   ├── merged_server.py       # Flask backend (all API + WebSocket)
+│   ├── merged_server.py       # Flask backend — all API routes + WebSocket
 │   ├── user_routes.py         # User CRUD (superadmin only)
 │   ├── download_routes.py     # CSV export routes
 │   ├── email_alert_routes.py  # Email alert config + Gmail OAuth
-│   ├── pi_client.py           # This machine's sensor reader service
-│   ├── pi_merged.service      # systemd unit for pi_client
-│   ├── requirements.txt       # pip deps for backend
-│   ├── sensor_config.json     # Sensor hardware settings
-│   └── sensor_network.json    # Sensor IP/port map
+│   ├── pi_client.py           # Sensor reader — runs as pi-merged-client service
+│   ├── pi_merged.service      # systemd unit template for pi_client
+│   ├── requirements.txt       # pip deps (Flask, Flask-SocketIO, psycopg2, Werkzeug)
+│   ├── sensor_config.json     # Sensor hardware settings (range, offset, etc.)
+│   └── sensor_network.json    # Sensor IP/port map (2 sensors = Opposite, 3 = SBS)
 ├── src/                       # React frontend source
-│   ├── App.jsx                # Root: mode selection, socket, page routing
-│   ├── constants/config.js    # SERVER URL resolution
+│   ├── App.jsx                # Root: mode selection, socket init, page routing
+│   ├── constants/config.js    # SERVER_URL resolution (env var → localStorage fallback)
 │   ├── pages/                 # Side-by-side mode pages
 │   └── pages/opposite/        # Opposite mode pages
 ├── .env.production            # VITE_SERVER_URL=https://194-164-148-145.sslip.io
 ├── vite.config.js             # Dev proxy: all API paths → localhost:5002
-├── deploy.py                  # Deploy backend to KVM + pi_client to this machine
-├── nginx_merged.conf          # nginx config for KVM (port 8082 only)
-├── thickness-monitor.service  # systemd unit for Flask on KVM
+├── deploy.py                  # Full deploy script (KVM backend + Ubuntu pi_client)
+├── nginx_merged.conf          # nginx config for KVM (port 8082 → 5002 only)
+├── thickness-monitor.service  # systemd unit for Flask on KVM (deployed as merged.service)
 └── CLAUDE.md                  # This file
 ```
 
 ---
 
-## Dev Workflow on This Machine
+## Dev Workflow
 
-### Frontend development
+### 1. Frontend change → Vercel
 
 ```bash
 cd ~/merged-version
-
-# Start dev server — opens at http://localhost:5173
-# All API calls proxy to localhost:5002 (vite.config.js)
-npm run dev
-
-# To test against the live KVM backend instead of local:
-# In browser localStorage: thicknessmon.server = https://194-164-148-145.sslip.io
+# edit files in src/
+git add src/
+git commit -m "feat: describe the change"
+git push origin main
+# Vercel rebuilds and redeploys automatically in ~60 seconds
 ```
 
-### Backend development (run locally)
+### 2. Backend change → KVM
+
+```bash
+cd ~/merged-version
+# edit files in backend/
+npm run build              # must build frontend first — deploy.py uploads dist/
+python3 deploy.py          # uploads backend + frontend to KVM, restarts merged.service
+                           # also re-deploys pi_client.py to this machine
+```
+
+### 3. Local frontend dev server
+
+```bash
+cd ~/merged-version
+npm run dev
+# Opens at http://localhost:5173
+# All API calls proxy to localhost:5002 (vite.config.js)
+# To point at live KVM instead: localStorage.setItem('thicknessmon.server', 'https://194-164-148-145.sslip.io')
+```
+
+### 4. Local backend dev server
 
 ```bash
 cd ~/merged-version/backend
-pip install -r requirements.txt
-
-# Run without CLOUD_MODE (connects directly to sensors on LAN)
-python3 merged_server.py
-
-# Run in CLOUD_MODE (receives data from pi_client, no direct sensor connection)
+# Run in CLOUD_MODE (receives data from pi_client via /ingest/readings)
 CLOUD_MODE=true SERVER_PORT=5002 python3 merged_server.py
+
+# Run without CLOUD_MODE (connects directly to sensors on 192.168.1.x)
+python3 merged_server.py
 ```
-
-PostgreSQL must be running locally with `sensor_db` / `rapl` / `rapl2026`.
-
-### Deploy frontend to Vercel
-
-```bash
-cd ~/merged-version
-git add src/           # or whatever changed
-git commit -m "..."
-git push origin main   # Vercel picks this up in ~60 seconds
-```
-
-### Deploy backend to KVM
-
-```bash
-cd ~/merged-version
-npm run build          # build frontend first (deploy.py uploads dist/)
-python3 deploy.py      # SSH into KVM + upload + restart service
-```
-
-`deploy.py` will also re-deploy `pi_client.py` to this machine and restart `pi-merged-client.service`.
 
 ---
 
 ## Sensor Modes
 
-| Mode | Sensors | What's measured |
-|------|---------|----------------|
-| **Side-by-Side (SBS)** | A, B, C from same side | Per-sensor displacement → thickness per sensor |
-| **Opposite** | A + B facing each other | `gap − (35 + dist_A) − (35 + dist_B)` = object thickness |
+| Mode | Sensors used | Measurement |
+|------|-------------|-------------|
+| **Side-by-Side (SBS)** | A, B, C (same side) | Per-sensor displacement → thickness per sensor |
+| **Opposite** | A + B (facing each other) | `gap − (35 + dist_A) − (35 + dist_B)` = object thickness |
 
-Mode is chosen by the user on the frontend start screen and is not a server setting.
-The backend detects mode from how many sensors are in `sensor_network.json` (2 = Opposite, 3 = SBS).
+Mode is chosen on the frontend start screen; it is not a server config.
+The backend infers mode from `sensor_network.json`: 2 sensors = Opposite, 3 = SBS.
 
 Default sensor IPs (configurable from the Backend page in the app):
 - Sensor A: `192.168.1.7:8234`
 - Sensor B: `192.168.1.8:8234`
-- Sensor C: `192.168.1.9:8234`
+- Sensor C: `192.168.1.9:8234` (SBS only)
 
 ---
 
-## User Roles & Default Credentials
+## User Roles
 
-| Username | Password | Role |
-|----------|----------|------|
-| superadmin | superadmin123 | Full access incl. user management + email alerts |
+| Username | Password | Access |
+|----------|----------|--------|
+| superadmin | superadmin123 | Everything incl. user management + email alerts |
 | admin | admin123 | All pages except user management |
 | supervisor | super123 | Dashboard, Run Mode, Download |
 | worker | worker123 | Dashboard only |
@@ -341,20 +381,45 @@ Default sensor IPs (configurable from the Backend page in the app):
 
 ## Troubleshooting
 
-**Vercel frontend has no backend / API calls failing**
-→ Check `systemctl status merged` on KVM. Check `journalctl -u merged -n 30` for errors.
-→ Confirm port 5002 is listening: `ss -tlnp | grep 5002` on KVM.
-→ Test directly: `curl https://194-164-148-145.sslip.io/sensors/status`
+**Frontend shows "pi client no readings"**
+→ pi_client is not posting data. On Ubuntu PC:
+```bash
+sudo systemctl status pi-merged-client
+sudo journalctl -u pi-merged-client -n 20
+# If "Network is unreachable":
+ip route show   # check 194.164.148.145 route exists
+sudo ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9
+sudo systemctl restart pi-merged-client
+```
 
-**pi_client not posting / sensors not showing live on dashboard**
-→ `sudo systemctl status pi-merged-client` on this machine.
-→ `sudo journalctl -u pi-merged-client -f` to watch live.
-→ Confirm sensors are powered and on LAN 192.168.1.x.
+**CORS errors in browser console**
+→ The frontend origin is not in Traefik's allowlist.
+→ On KVM: edit `/root/traefik-conf/merged.yml`, add the origin to
+  `accessControlAllowOriginList`. Save — Traefik reloads automatically.
+→ **Do NOT add Flask-CORS back.** It was removed because it caused duplicate
+  headers when combined with Traefik, which browsers reject.
 
-**git pull blocked by router**
-→ `git config --global http.sslVerify false` then retry.
-→ Or use phone hotspot temporarily to pull/push.
+**API calls failing / backend unreachable**
+```bash
+# On KVM:
+systemctl status merged
+journalctl -u merged -n 30
+ss -tlnp | grep 5002
+curl https://194-164-148-145.sslip.io/sensors/status
+```
 
-**Backend crash on KVM after deploy**
-→ `journalctl -u merged -n 30` — look for ImportError or missing module.
-→ Most likely a missing file in the `backend_files` list in `deploy.py`.
+**Backend crash after deploy**
+→ `journalctl -u merged -n 30` on KVM — look for `ImportError` or missing file.
+→ Check `backend_files` list in `deploy.py` — a needed file may not be listed.
+
+**WebSocket not connecting**
+→ Traefik proxies WebSocket automatically. Check the browser console for the
+  exact error. Confirm `cors_allowed_origins='*'` is still set in the
+  `SocketIO(...)` call in `merged_server.py`.
+
+**git pull blocked**
+→ `git config --global http.sslVerify false` then retry, or use phone hotspot.
+
+**After Ubuntu PC reboot — sensors stop showing**
+→ The route fix and `Restart=always` in the service should handle this automatically.
+→ If not: `sudo systemctl start pi-merged-client` and check `ip route show`.
