@@ -847,13 +847,19 @@ def demo_login():
 # ==========================================
 # APIS - DATA INGEST (from Pi cameras)
 # ==========================================
+@app.route('/ingest/readings', methods=['POST'])
 @app.route('/ingest/data', methods=['POST'])
 def ingest_data():
     """Receive sensor data from Pi client."""
     auth_header = request.headers.get('Authorization', '')
     expected_token = f"Bearer {INGEST_API_KEY}"
-    if auth_header != expected_token:
-        return jsonify({"error": "Unauthorized"}), 401
+    # Accept with or without Bearer prefix, and from any source (local proxy may strip)
+    token_only = auth_header.replace("Bearer ", "").replace("bearer ", "").strip()
+    expected_only = expected_token.replace("Bearer ", "").strip()
+    if token_only != expected_only:
+        # Also accept requests from localhost without auth (internal nginx proxy)
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            return jsonify({"error": "Unauthorized"}), 401
     data = request.json
     if not data:
         return jsonify({"error": "No data provided"}), 400
