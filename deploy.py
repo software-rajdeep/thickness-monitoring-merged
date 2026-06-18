@@ -26,7 +26,7 @@ def upload_text(sftp, content, remote_path):
         f.write(content)
     print(f"  wrote -> {remote_path}")
 
-BASE = r"C:\Users\admin\Documents\merged"
+BASE = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
 # 1. DEPLOY TO KVM
@@ -140,6 +140,10 @@ ubuntu.connect('192.168.5.13', username='linux', password='linux', timeout=15)
 
 print("\n[Ubuntu] Uploading backend files to merged-version...")
 sftp2 = ubuntu.open_sftp()
+# Ensure add-kvm-route.sh exists so ExecStartPre in the service works
+route_sh = '#!/bin/bash\n/sbin/ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9 2>/dev/null || true\nexit 0\n'
+upload_text(sftp2, route_sh, '/home/linux/add-kvm-route.sh')
+run(ubuntu, 'chmod +x /home/linux/add-kvm-route.sh')
 for fname in ["pi_client.py", "sensor_network.json", "merged_server.py",
               "user_routes.py", "download_routes.py", "email_alert_routes.py"]:
     local = os.path.join(BASE, "backend", fname)
