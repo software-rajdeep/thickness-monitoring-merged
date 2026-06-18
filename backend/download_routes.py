@@ -16,7 +16,7 @@ DB_USER = "rapl"
 DB_PASS = "rapl2026"
 
 
-def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED):
+def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS=None, DB_TABLE_THICKNESS_RAW=None):
     from flask import request, jsonify, Response, send_from_directory
 
     @app.route('/download/filtered', methods=['POST'])
@@ -82,14 +82,33 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED):
             filtered_count = cur.fetchone()[0]
             cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_UNFILTERED}")
             unfiltered_count = cur.fetchone()[0]
+            
+            # Opposite-side table counts (if table names provided)
+            thickness_count = None
+            thickness_raw_count = None
+            if DB_TABLE_THICKNESS:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_THICKNESS}")
+                    thickness_count = cur.fetchone()[0]
+                except:
+                    thickness_count = 0
+            if DB_TABLE_THICKNESS_RAW:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_THICKNESS_RAW}")
+                    thickness_raw_count = cur.fetchone()[0]
+                except:
+                    thickness_raw_count = 0
+            
             cur.execute("SELECT COUNT(*) FROM users")
             users_count = cur.fetchone()[0]
             cur.close()
             conn.close()
             return jsonify({
-                "filtered":   filtered_count,
-                "unfiltered": unfiltered_count,
-                "users":      users_count,
+                "filtered":        filtered_count,
+                "unfiltered":      unfiltered_count,
+                "thickness":       thickness_count,
+                "thickness_raw":   thickness_raw_count,
+                "users":           users_count,
             }), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500

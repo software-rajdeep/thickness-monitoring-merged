@@ -698,6 +698,10 @@ register_user_routes(app)
 from email_alert_routes import email_alerts_bp
 app.register_blueprint(email_alerts_bp)
 
+# Register download & db/status routes
+from download_routes import register_download_routes
+register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW)
+
 # CORS(app) removed — handled by Traefik middleware
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
