@@ -297,16 +297,7 @@ export default function App() {
   async function handleLogin(u) {
     setUser(u);
     setPage("dashboard");
-    // Load user's saved calibration into runtime state
-    try {
-      await fetch(`${SERVER}/thickness/load-user-calibration`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: u.username }),
-      });
-    } catch {
-      // If server unavailable, continue without loading calibration
-    }
+    // Calibration state is now global (shared across all users)
     await loadThicknessState();
   }
 
