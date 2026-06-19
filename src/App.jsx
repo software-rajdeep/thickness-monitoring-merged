@@ -227,7 +227,7 @@ export default function App() {
   // ── Socket ──────────────────────────────────────────────────────────────
   function connectSocket() {
     if (socketRef.current) return;
-    const socket = io(SERVER, { transports: ["websocket"] });
+    const socket = io(SERVER, { transports: ["polling", "websocket"] });
 
     socket.on("connect", () => {
       setConnected(true);
