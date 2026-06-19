@@ -19,12 +19,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EMAIL_CONFIG_PATH = os.path.join(BASE_DIR, "email_alert_config.json")
 TOKEN_PATH = os.path.join(BASE_DIR, "gmail_token.json")
 
-# Allow overriding the OAuth redirect URI via environment variable (for ngrok HTTPS)
-OAUTH_REDIRECT_URI = os.environ.get(
-    "OAUTH_REDIRECT_URI",
-    "http://localhost:5000/email-alerts/oauth-callback"
-)
-
 # ── Google API imports (lazy-loaded so the module works without them) ──
 try:
     from google.oauth2.credentials import Credentials
@@ -589,14 +583,14 @@ def get_auth_url():
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": "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",
-            "redirect_uris": [OAUTH_REDIRECT_URI]
+            "redirect_uris": ["http://localhost:5000/email-alerts/oauth-callback"]
         }
     }
 
     try:
         flow = InstalledAppFlow.from_client_config(
             client_config, SCOPES,
-            redirect_uri=OAUTH_REDIRECT_URI
+            redirect_uri="http://localhost:5000/email-alerts/oauth-callback"
         )
         auth_url, _ = flow.authorization_url(
             access_type="offline",
@@ -620,51 +614,11 @@ def oauth_callback():
         return jsonify({"error": "Google API libraries not installed"}), 500
 
     authorization_response = request.url
-    # When behind ngrok, request.url uses http://localhost:5000 but
-    # Google's OAuth requires HTTPS matching the registered redirect URI.
-    # Replace the local base with the OAUTH_REDIRECT_URI base.
     try:
-        from urllib.parse import urlparse
-        parsed_local = urlparse(authorization_response)
-        parsed_https = urlparse(OAUTH_REDIRECT_URI)
-        if parsed_local.netloc == "localhost:5000" and parsed_https.scheme == "https":
-            authorization_response = authorization_response.replace(
-                f"http://localhost:5000",
-                f"{parsed_https.scheme}://{parsed_https.netloc}",
-                1
-            )
-    except Exception:
-        pass
+        if _pending_flow is None:
+            return jsonify({"error": "No pending OAuth flow. Start authentication first."}), 400
 
-    try:
         flow = _pending_flow
-        if flow is None:
-            # Pending flow was lost (e.g. server restart, multiple tabs).
-            # Reconstruct from known client config and the state in the URL.
-            from urllib.parse import urlparse, parse_qs
-            parsed = urlparse(authorization_response)
-            params = parse_qs(parsed.query)
-            state_val = params.get("state", [None])[0]
-
-            client_config = {
-                "web": {
-                    "client_id": "676970971720-mdce53i1i4agalvvrn72psnmnvvroer0.apps.googleusercontent.com",
-                    "project_id": "thickness-monitor-alerts",
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "client_secret": "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",
-                    "redirect_uris": [OAUTH_REDIRECT_URI]
-                }
-            }
-            flow = InstalledAppFlow.from_client_config(
-                client_config, SCOPES,
-                redirect_uri=OAUTH_REDIRECT_URI
-            )
-            # Restore the state from the callback URL so fetch_token can validate it
-            if state_val:
-                flow.oauth2session.state = state_val
-
         flow.fetch_token(authorization_response=authorization_response)
         creds = flow.credentials
 
@@ -679,43 +633,13 @@ def oauth_callback():
         config["api_type"] = "gmail_oauth"
         save_email_config(config)
 
-        # Return HTML so the popup window shows a friendly message (not raw JSON)
-        html_response = f"""\
-<html><head><meta charset="utf-8"><title>Authentication Successful</title>
-<style>
-body {{ font-family: Arial, sans-serif; display: flex; justify-content: center;
-       align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }}
-.card {{ background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-        text-align: center; max-width: 420px; }}
-h2 {{ color: #2e7d32; margin-top: 0; }} .check {{ font-size: 64px; color: #2e7d32; }}
-p {{ color: #555; line-height: 1.5; }}
-</style></head><body>
-<div class="card">
-<div class="check">&#10003;</div>
-<h2>Authentication Successful!</h2>
-<p>Your Google account is now connected.<br>
-You can close this window and return to the application.</p>
-</div></body></html>"""
-        return html_response, 200, {"Content-Type": "text/html"}
+        return jsonify({
+            "message": "Google authentication successful! You can now send emails.",
+            "authenticated": True
+        }), 200
     except Exception as e:
         _pending_flow = None
-        html_error = f"""\
-<html><head><meta charset="utf-8"><title>Authentication Failed</title>
-<style>
-body {{ font-family: Arial, sans-serif; display: flex; justify-content: center;
-       align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }}
-.card {{ background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-        text-align: center; max-width: 420px; }}
-h2 {{ color: #c62828; margin-top: 0; }} .x {{ font-size: 64px; color: #c62828; }}
-p {{ color: #555; line-height: 1.5; }}
-</style></head><body>
-<div class="card">
-<div class="x">&#10007;</div>
-<h2>Authentication Failed</h2>
-<p style="color:#c62828;">{str(e)}</p>
-<p>Please close this window and try signing in again from the application.</p>
-</div></body></html>"""
-        return html_error, 200, {"Content-Type": "text/html"}
+        return jsonify({"error": f"OAuth callback failed: {str(e)}"}), 500
 
 @email_alerts_bp.route("/email-alerts/trigger/<alert_type>", methods=["POST"])
 def trigger_alert_api(alert_type):

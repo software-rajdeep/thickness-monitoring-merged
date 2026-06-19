@@ -10,6 +10,27 @@ DB_USER = "rapl"
 DB_PASS = "rapl2026"
 
 
+def get_lowest_available_user_id(cur):
+    cur.execute(
+        """
+        SELECT gs AS next_id
+        FROM generate_series(
+            1,
+            COALESCE((SELECT MAX(id) FROM users), 0) + 1
+        ) AS gs
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM users u
+            WHERE u.id = gs
+        )
+        ORDER BY gs
+        LIMIT 1
+        """
+    )
+    result = cur.fetchone()
+    return result[0] if result else 1
+
+
 def register_user_routes(app):
 
     @app.route('/users', methods=['GET'])
@@ -41,9 +62,14 @@ def register_user_routes(app):
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
             hashed = generate_password_hash(password)
+
+            # Lock user IDs while we pick and insert the next available one.
+            cur.execute("LOCK TABLE users IN EXCLUSIVE MODE")
+            next_user_id = get_lowest_available_user_id(cur)
+
             cur.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) RETURNING id",
-                (username, hashed, role)
+                "INSERT INTO users (id, username, password_hash, role) VALUES (%s, %s, %s, %s) RETURNING id",
+                (next_user_id, username, hashed, role)
             )
             new_id = cur.fetchone()[0]
             conn.commit()
