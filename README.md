@@ -112,9 +112,9 @@ It will also update the pi_client on this machine if you changed `pi_client.py`.
 | Posts to | `http://194.164.148.145:8082/ingest/readings` |
 | API key | `merged-secret-2026` |
 | Rate | 5 readings/second |
-| Sensor A | `192.168.1.7:8234` |
-| Sensor B | `192.168.1.8:8234` |
-| Sensor C | `192.168.1.9:8234` |
+| Sensor A | `192.168.5.200:8234` |
+| Sensor B | `192.168.5.201:8234` |
+| Sensor C | `192.168.5.202:8234` |
 
 ---
 

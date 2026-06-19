@@ -362,9 +362,9 @@ Mode is chosen on the frontend start screen; it is not a server config.
 The backend infers mode from `sensor_network.json`: 2 sensors = Opposite, 3 = SBS.
 
 Default sensor IPs (configurable from the Backend page in the app):
-- Sensor A: `192.168.1.7:8234`
-- Sensor B: `192.168.1.8:8234`
-- Sensor C: `192.168.1.9:8234` (SBS only)
+- Sensor A: `192.168.5.200:8234`
+- Sensor B: `192.168.5.201:8234`
+- Sensor C: `192.168.5.202:8234` (SBS only)
 
 ---
 

@@ -30,9 +30,9 @@ export const DEMO_ACCOUNTS = [
 ];
 
 export const SENSOR_CONFIGS = {
-  A: { ip: "192.168.1.7", port: 8234, name: "Sensor A" },
-  B: { ip: "192.168.1.8", port: 8234, name: "Sensor B" },
-  C: { ip: "192.168.1.9", port: 8234, name: "Sensor C" },
+  A: { ip: "192.168.5.200", port: 8234, name: "Sensor A" },
+  B: { ip: "192.168.5.201", port: 8234, name: "Sensor B" },
+  C: { ip: "192.168.5.202", port: 8234, name: "Sensor C" },
 };
 
 export const NAV_ITEMS = [

@@ -69,9 +69,9 @@ def init_config_file():
         if not os.path.exists(CONFIG_FILE_PATH):
             print("--- Creating default sensor_config.json ---")
             default_config = {
-                "A": {"ip": "192.168.1.7", "port": 8234, "name": "Sensor A"},
-                "B": {"ip": "192.168.1.8", "port": 8234, "name": "Sensor B"},
-                "C": {"ip": "192.168.1.9", "port": 8234, "name": "Sensor C"},
+                "A": {"ip": "192.168.5.200", "port": 8234, "name": "Sensor A"},
+                "B": {"ip": "192.168.5.201", "port": 8234, "name": "Sensor B"},
+                "C": {"ip": "192.168.5.202", "port": 8234, "name": "Sensor C"},
             }
             with open(CONFIG_FILE_PATH, 'w') as f:
                 json.dump(default_config, f, indent=4)
@@ -84,9 +84,9 @@ def init_network_config_file():
         if not os.path.exists(NETWORK_CONFIG_FILE_PATH):
             print("--- Creating default sensor_network.json ---")
             default_config = {
-                "A": {"ip": "192.168.1.7", "port": 8234, "name": "Sensor A", "sensor_type": "cd22"},
-                "B": {"ip": "192.168.1.8", "port": 8234, "name": "Sensor B", "sensor_type": "cd22"},
-                "C": {"ip": "192.168.1.9", "port": 8234, "name": "Sensor C", "sensor_type": "cd22"},
+                "A": {"ip": "192.168.5.200", "port": 8234, "name": "Sensor A", "sensor_type": "cd22"},
+                "B": {"ip": "192.168.5.201", "port": 8234, "name": "Sensor B", "sensor_type": "cd22"},
+                "C": {"ip": "192.168.5.202", "port": 8234, "name": "Sensor C", "sensor_type": "cd22"},
             }
             with open(NETWORK_CONFIG_FILE_PATH, 'w') as f:
                 json.dump(default_config, f, indent=4)
@@ -169,9 +169,9 @@ def refresh_sensor_configs(new_config=None):
         SENSOR_CONFIGS = load_network_config()
         if not SENSOR_CONFIGS:
             SENSOR_CONFIGS = {
-                "A": {"ip": "192.168.1.7", "port": 8234, "name": "Sensor A"},
-                "B": {"ip": "192.168.1.8", "port": 8234, "name": "Sensor B"},
-                "C": {"ip": "192.168.1.9", "port": 8234, "name": "Sensor C"},
+                "A": {"ip": "192.168.5.200", "port": 8234, "name": "Sensor A"},
+                "B": {"ip": "192.168.5.201", "port": 8234, "name": "Sensor B"},
+                "C": {"ip": "192.168.5.202", "port": 8234, "name": "Sensor C"},
             }
     rebuild_active_sensors()
 
