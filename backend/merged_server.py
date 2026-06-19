@@ -966,6 +966,26 @@ def stream_config():
     return jsonify({"message": "Stream config updated", "target_rate_hz": stream_state["target_rate_hz"]}), 200
 
 # ==========================================
+# PI CLIENT CONFIG POLL ENDPOINTS
+# ==========================================
+# pi_client polls /config/poll every 3 seconds for sensor write commands
+pending_config_commands = []
+
+@app.route('/config/poll', methods=['GET'])
+def config_poll():
+    """Return pending config commands for pi_client to execute on sensors."""
+    cmd_list = list(pending_config_commands)
+    pending_config_commands.clear()
+    return jsonify({"commands": cmd_list}), 200
+
+@app.route('/config/result', methods=['POST'])
+def config_result():
+    """Receive result of a config command execution from pi_client."""
+    data = request.json or {}
+    # Log or process the result as needed
+    return jsonify({"status": "received"}), 200
+
+# ==========================================
 # EXISTING PAGES + STATIC FILES
 # ==========================================
 @app.route('/', defaults={'path': ''})
