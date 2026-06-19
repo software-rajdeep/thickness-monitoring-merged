@@ -32,7 +32,6 @@ function Section({ title, children, defaultOpen = true }) {
 
 export default function EmailAlertSettings({ onClose }) {
   const [config, setConfig] = useState(null);
-  const [apiOptions, setApiOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testStatus, setTestStatus] = useState(null);
@@ -41,21 +40,14 @@ export default function EmailAlertSettings({ onClose }) {
   const [oauthMsg, setOauthMsg] = useState("");
   const panelRef = useRef(null);
 
-  // ── Load config and API options ──
+  // ── Load config ──
   useEffect(() => {
     async function load() {
       try {
-        const [configRes, optionsRes] = await Promise.all([
-          fetch(`${SERVER}/email-alerts/config`),
-          fetch(`${SERVER}/email-alerts/api-options`),
-        ]);
+        const configRes = await fetch(`${SERVER}/email-alerts/config`);
         if (configRes.ok) {
           const data = await configRes.json();
           setConfig(data);
-        }
-        if (optionsRes.ok) {
-          const data = await optionsRes.json();
-          setApiOptions(data);
         }
       } catch (err) {
         console.error("Failed to load email config:", err);
@@ -92,6 +84,26 @@ export default function EmailAlertSettings({ onClose }) {
       }
     } catch (err) {
       console.error("Failed to save config:", err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── Save threshold limits ──
+  async function saveThresholdLimits(updated) {
+    setSaving(true);
+    try {
+      const res = await fetch(`${SERVER}/email-alerts/threshold-limits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threshold_limits: updated }),
+      });
+      if (res.ok) {
+        const configRes = await fetch(`${SERVER}/email-alerts/config`);
+        if (configRes.ok) setConfig(await configRes.json());
+      }
+    } catch (err) {
+      console.error("Failed to save threshold limits:", err);
     } finally {
       setSaving(false);
     }
@@ -144,7 +156,6 @@ export default function EmailAlertSettings({ onClose }) {
       const res = await fetch(`${SERVER}/email-alerts/auth-url`);
       const data = await res.json();
       if (res.ok && data.auth_url) {
-        // Open the Google OAuth page in a new window
         const width = 500;
         const height = 600;
         const left = window.screenX + (window.outerWidth - width) / 2;
@@ -155,10 +166,9 @@ export default function EmailAlertSettings({ onClose }) {
           `width=${width},height=${height},left=${left},top=${top}`
         );
 
-        // Poll for the token file to appear (backend saves it on callback)
         setOauthMsg("Waiting for authentication...");
         let attempts = 0;
-        const maxAttempts = 120; // 2 minutes
+        const maxAttempts = 120;
         const checkInterval = setInterval(async () => {
           attempts++;
           try {
@@ -194,24 +204,6 @@ export default function EmailAlertSettings({ onClose }) {
     }
   }
 
-  // ── When API type changes ──
-  function handleApiTypeChange(apiId) {
-    const option = apiOptions.find(o => o.id === apiId);
-    if (option && !option.is_oauth) {
-      const updated = {
-        api_type: apiId,
-        smtp_config: {
-          host: option.smtp_host || "",
-          port: option.smtp_port || 587,
-          use_tls: true,
-        },
-      };
-      saveConfig(updated);
-    } else if (option && option.is_oauth) {
-      saveConfig({ api_type: apiId });
-    }
-  }
-
   if (loading) {
     return (
       <div className="email-panel" ref={panelRef}>
@@ -228,16 +220,16 @@ export default function EmailAlertSettings({ onClose }) {
     );
   }
 
-  // ── Derive state from config ──
   const {
     enabled,
-    api_type,
-    smtp_config,
     recipient_email,
     alerts,
     cooldown,
     summary_report,
+    threshold_limits,
   } = config;
+
+  const tl = threshold_limits || { min: null, max: null, enabled: false };
 
   return (
     <div className="email-panel" ref={panelRef}>
@@ -260,125 +252,47 @@ export default function EmailAlertSettings({ onClose }) {
 
       {enabled && (
         <div className="email-panel-content">
-          {/* ── API Selection ── */}
-          <Section title="1. API Selection" defaultOpen={true}>
-            <p className="email-hint">Choose your email provider:</p>
-            <div className="api-options-grid">
-              {apiOptions.map(opt => (
-                <div
-                  key={opt.id}
-                  className={`api-option-card ${api_type === opt.id ? "selected" : ""}`}
-                  onClick={() => handleApiTypeChange(opt.id)}
-                >
-                  <div className="api-option-name">{opt.name}</div>
-                  <div className="api-option-desc">{opt.description}</div>
-                  {opt.requires_app_password && (
-                    <div className="api-option-note">Requires App Password</div>
-                  )}
-                  {opt.is_oauth && opt.authenticated && (
-                    <div className="api-option-auth">✓ Authenticated</div>
+          {/* ── Google Authentication ── */}
+          <Section title="1. Google Authentication" defaultOpen={true}>
+            <p className="email-hint">
+              This system uses <strong>Gmail API with OAuth</strong> to send email alerts.
+              No SMTP passwords needed.
+            </p>
+            <div className="oauth-section">
+              {!config.gmail_authenticated ? (
+                <div>
+                  <p className="email-hint">
+                    Click below to sign in with Google. Grant the app permission to
+                    send emails on your behalf.
+                  </p>
+                  <button
+                    className="email-btn email-btn-google"
+                    onClick={handleGoogleSignIn}
+                    disabled={oauthStatus === "loading"}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 48 48">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.41-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                      <path fill="#FBBC05" d="M10.53 28.59A14.5 14.5 0 0 1 9.5 24c0-1.59.28-3.14.76-4.59l-7.98-6.19A23.99 23.99 0 0 0 0 24c0 3.8.89 7.4 2.56 10.78l7.97-6.19z"/>
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                    </svg>
+                    {oauthStatus === "loading" ? "Connecting..." : "Sign in with Google"}
+                  </button>
+                  {oauthStatus && (
+                    <span className={`oauth-status ${oauthStatus}`}>{oauthMsg}</span>
                   )}
                 </div>
-              ))}
-            </div>
-
-            {/* Google OAuth Sign-In Button (only when Gmail OAuth is selected) */}
-            {api_type === "gmail_oauth" && (
-              <div className="oauth-section">
-                {!config.gmail_authenticated ? (
-                  <div>
-                    <p className="email-hint">
-                      Click below to sign in with Google. No password needed — 
-                      just grant the app permission to send emails on your behalf.
-                    </p>
-                    <button
-                      className="email-btn email-btn-google"
-                      onClick={handleGoogleSignIn}
-                      disabled={oauthStatus === "loading"}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 48 48">
-                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.41-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                        <path fill="#FBBC05" d="M10.53 28.59A14.5 14.5 0 0 1 9.5 24c0-1.59.28-3.14.76-4.59l-7.98-6.19A23.99 23.99 0 0 0 0 24c0 3.8.89 7.4 2.56 10.78l7.97-6.19z"/>
-                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                      </svg>
-                      {oauthStatus === "loading" ? "Connecting..." : "Sign in with Google"}
-                    </button>
-                    {oauthStatus && (
-                      <span className={`oauth-status ${oauthStatus}`}>{oauthMsg}</span>
-                    )}
-                  </div>
-                ) : (
-                  <div className="oauth-authenticated">
-                    <span className="oauth-badge">✓ Gmail Authenticated</span>
-                    <p className="email-hint">Your Google account is connected. Emails will be sent via Gmail API.</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </Section>
-
-          {/* ── SMTP Configuration ── */}
-          <Section title="2. SMTP Configuration" defaultOpen={true}>
-            <div className="email-form-row">
-              <label className="email-label">SMTP Host</label>
-              <input
-                className="email-input"
-                type="text"
-                value={smtp_config.host}
-                onChange={e => saveConfig({
-                  smtp_config: { ...smtp_config, host: e.target.value }
-                })}
-              />
-            </div>
-            <div className="email-form-row">
-              <label className="email-label">SMTP Port</label>
-              <input
-                className="email-input"
-                type="number"
-                value={smtp_config.port}
-                onChange={e => saveConfig({
-                  smtp_config: { ...smtp_config, port: parseInt(e.target.value) || 587 }
-                })}
-              />
-            </div>
-            <div className="email-form-row">
-              <label className="email-label">Email Address</label>
-              <input
-                className="email-input"
-                type="email"
-                placeholder="your-email@gmail.com"
-                value={smtp_config.email}
-                onChange={e => saveConfig({
-                  smtp_config: { ...smtp_config, email: e.target.value }
-                })}
-              />
-            </div>
-            <div className="email-form-row">
-              <label className="email-label">App Password</label>
-              <input
-                className="email-input"
-                type="password"
-                placeholder={smtp_config.password ? "********" : "Enter password"}
-                value={smtp_config.password === "********" ? "" : smtp_config.password}
-                onChange={e => saveConfig({
-                  smtp_config: { ...smtp_config, password: e.target.value }
-                })}
-              />
-            </div>
-            <div className="email-form-row">
-              <label className="email-label">Use TLS</label>
-              <Toggle
-                checked={smtp_config.use_tls}
-                onChange={v => saveConfig({
-                  smtp_config: { ...smtp_config, use_tls: v }
-                })}
-              />
+              ) : (
+                <div className="oauth-authenticated">
+                  <span className="oauth-badge">✓ Gmail Authenticated</span>
+                  <p className="email-hint">Your Google account is connected. Emails will be sent via Gmail API.</p>
+                </div>
+              )}
             </div>
           </Section>
 
           {/* ── Recipient ── */}
-          <Section title="3. Recipient Settings" defaultOpen={true}>
+          <Section title="2. Recipient Settings" defaultOpen={true}>
             <div className="email-form-row">
               <label className="email-label">Recipient Email</label>
               <input
@@ -391,8 +305,59 @@ export default function EmailAlertSettings({ onClose }) {
             </div>
           </Section>
 
-          {/* ── Threshold Alerts ── */}
-          <Section title="4. Threshold Alerts" defaultOpen={true}>
+          {/* ── Threshold Limits (Alert Triggers) ── */}
+          <Section title="3. Alert Threshold Limits" defaultOpen={true}>
+            <p className="email-hint">
+              Set the thickness limits. When the measured thickness goes below MIN 
+              or above MAX, an alert email will be sent automatically.
+            </p>
+            <Toggle
+              label="Enable threshold limits"
+              checked={tl.enabled}
+              onChange={v => saveThresholdLimits({ ...tl, enabled: v })}
+            />
+            {tl.enabled && (
+              <>
+                <div className="email-form-row">
+                  <label className="email-label">Minimum Limit (mm)</label>
+                  <input
+                    className="email-input"
+                    type="number"
+                    step="0.001"
+                    placeholder="e.g. 4.000"
+                    value={tl.min !== null && tl.min !== undefined ? tl.min : ""}
+                    onChange={e => {
+                      const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                      saveThresholdLimits({ ...tl, min: val });
+                    }}
+                  />
+                </div>
+                <div className="email-form-row">
+                  <label className="email-label">Maximum Limit (mm)</label>
+                  <input
+                    className="email-input"
+                    type="number"
+                    step="0.001"
+                    placeholder="e.g. 8.000"
+                    value={tl.max !== null && tl.max !== undefined ? tl.max : ""}
+                    onChange={e => {
+                      const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                      saveThresholdLimits({ ...tl, max: val });
+                    }}
+                  />
+                </div>
+                {tl.min !== null && tl.max !== null && (
+                  <p className="email-hint">
+                    Alerts will fire when thickness is below <strong>{tl.min} mm</strong> 
+                    {' '}or above <strong>{tl.max} mm</strong>
+                  </p>
+                )}
+              </>
+            )}
+          </Section>
+
+          {/* ── Threshold Alert Toggles ── */}
+          <Section title="4. Alert Type Toggles" defaultOpen={true}>
             <Toggle
               label="Below MIN limit"
               checked={alerts.threshold_below_min}

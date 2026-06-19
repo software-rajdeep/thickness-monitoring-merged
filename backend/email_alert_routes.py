@@ -1,6 +1,6 @@
 """
 Email Alert Routes
-Provides Gmail API integration (OAuth) and SMTP fallback for alert notifications.
+Provides Gmail API integration (OAuth) only - SMTP removed.
 Only accessible by Super Admin.
 """
 import json
@@ -8,8 +8,6 @@ import os
 import threading
 import time
 import datetime
-import smtplib
-import ssl
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -35,14 +33,7 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 # ── Default Configuration ──────────────────────────────────────────────
 DEFAULT_CONFIG = {
     "enabled": False,
-    "api_type": "gmail_oauth",  # "gmail_oauth", "gmail_smtp", "outlook", "custom_smtp"
-    "smtp_config": {
-        "host": "smtp.gmail.com",
-        "port": 587,
-        "use_tls": True,
-        "email": "",
-        "password": "",
-    },
+    "api_type": "gmail_oauth",
     "recipient_email": "",
     "alerts": {
         "threshold_below_min": True,
@@ -59,6 +50,11 @@ DEFAULT_CONFIG = {
     "summary_report": {
         "enabled": False,
         "frequency": "daily",
+    },
+    "threshold_limits": {
+        "min": None,
+        "max": None,
+        "enabled": False,
     },
 }
 
@@ -178,48 +174,6 @@ def send_via_gmail_api(subject, body_html, body_plain, recipient):
     except Exception as e:
         return False, f"Gmail API error: {str(e)}"
 
-# ── SMTP Email Sending (fallback) ──────────────────────────────────────
-def send_via_smtp(subject, body_html, body_plain, recipient):
-    """Send email using SMTP (for Gmail SMTP, Outlook, custom)."""
-    config = get_email_config()
-    smtp_cfg = config.get("smtp_config", {})
-    sender_email = smtp_cfg.get("email", "").strip()
-    password = smtp_cfg.get("password", "").strip()
-
-    if not sender_email or not password:
-        return False, "SMTP credentials not configured"
-
-    host = smtp_cfg.get("host", "smtp.gmail.com")
-    port = smtp_cfg.get("port", 587)
-    use_tls = smtp_cfg.get("use_tls", True)
-
-    msg = MIMEMultipart("alternative")
-    msg["From"] = sender_email
-    msg["To"] = recipient
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body_plain, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
-
-    with _email_lock:
-        try:
-            if use_tls:
-                context = ssl.create_default_context()
-                with smtplib.SMTP(host, port, timeout=10) as server:
-                    server.starttls(context=context)
-                    server.login(sender_email, password)
-                    server.sendmail(sender_email, recipient, msg.as_string())
-            else:
-                with smtplib.SMTP_SSL(host, port, timeout=10) as server:
-                    server.login(sender_email, password)
-                    server.sendmail(sender_email, recipient, msg.as_string())
-            return True, None
-        except smtplib.SMTPAuthenticationError:
-            return False, "SMTP authentication failed. Check email/password."
-        except smtplib.SMTPException as e:
-            return False, f"SMTP error: {str(e)}"
-        except Exception as e:
-            return False, f"Failed to send email: {str(e)}"
-
 # ── Email Sending ──────────────────────────────────────────────────────
 def build_email_body(subject, body_content):
     """Build HTML and plain text email body."""
@@ -248,7 +202,7 @@ def build_email_body(subject, body_content):
 
 def send_email(subject, body_content):
     """
-    Send an email using the configured method.
+    Send an email using Gmail API.
     Returns (success: bool, error_message: str or None)
     """
     config = get_email_config()
@@ -260,12 +214,7 @@ def send_email(subject, body_content):
         return False, "No recipient email configured"
 
     html_body, plain_text = build_email_body(subject, body_content)
-    api_type = config.get("api_type", "gmail_oauth")
-
-    if api_type == "gmail_oauth":
-        return send_via_gmail_api(subject, html_body, plain_text, recipient)
-    else:
-        return send_via_smtp(subject, html_body, plain_text, recipient)
+    return send_via_gmail_api(subject, html_body, plain_text, recipient)
 
 # ── Alert Triggering API ──────────────────────────────────────────────
 def trigger_alert(alert_type, title, details):
@@ -439,8 +388,6 @@ email_alerts_bp = Blueprint("email_alerts", __name__)
 def get_email_alert_config():
     config = get_email_config()
     safe_config = json.loads(json.dumps(config))
-    if "smtp_config" in safe_config:
-        safe_config["smtp_config"]["password"] = "********" if safe_config["smtp_config"].get("password") else ""
     # Check if Gmail OAuth is authenticated
     safe_config["gmail_authenticated"] = os.path.exists(TOKEN_PATH)
     return jsonify(safe_config), 200
@@ -456,19 +403,6 @@ def update_email_alert_config():
         config["api_type"] = str(data["api_type"])
     if "recipient_email" in data:
         config["recipient_email"] = str(data["recipient_email"]).strip()
-
-    if "smtp_config" in data:
-        smtp = data["smtp_config"]
-        if "host" in smtp:
-            config["smtp_config"]["host"] = str(smtp["host"])
-        if "port" in smtp:
-            config["smtp_config"]["port"] = int(smtp["port"])
-        if "use_tls" in smtp:
-            config["smtp_config"]["use_tls"] = bool(smtp["use_tls"])
-        if "email" in smtp:
-            config["smtp_config"]["email"] = str(smtp["email"]).strip()
-        if "password" in smtp and smtp["password"] and smtp["password"] != "********":
-            config["smtp_config"]["password"] = smtp["password"]
 
     if "alerts" in data:
         for key in config["alerts"]:
@@ -486,6 +420,15 @@ def update_email_alert_config():
             config["summary_report"]["enabled"] = bool(data["summary_report"]["enabled"])
         if "frequency" in data["summary_report"]:
             config["summary_report"]["frequency"] = str(data["summary_report"]["frequency"])
+
+    if "threshold_limits" in data:
+        tl = data["threshold_limits"]
+        if "min" in tl:
+            config["threshold_limits"]["min"] = tl["min"]
+        if "max" in tl:
+            config["threshold_limits"]["max"] = tl["max"]
+        if "enabled" in tl:
+            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
 
     save_email_config(config)
     return jsonify({"message": "Email alert configuration updated successfully"}), 200
@@ -508,65 +451,6 @@ def test_email_alert():
         return jsonify({"message": "Test email sent successfully"}), 200
     else:
         return jsonify({"error": error}), 500
-
-@email_alerts_bp.route("/email-alerts/api-options", methods=["GET"])
-def get_api_options():
-    options = [
-        {
-            "id": "gmail_oauth",
-            "name": "Gmail (OAuth - Recommended)",
-            "description": "Sign in with Google - no password needed. Most secure.",
-            "is_oauth": True,
-            "available": GOOGLE_API_AVAILABLE,
-            "authenticated": os.path.exists(TOKEN_PATH),
-        },
-        {
-            "id": "gmail_smtp",
-            "name": "Gmail (App Password)",
-            "description": "Use Gmail SMTP with App Password (smtp.gmail.com:587)",
-            "is_oauth": False,
-            "smtp_host": "smtp.gmail.com",
-            "smtp_port": 587,
-            "requires_app_password": True,
-        },
-        {
-            "id": "outlook",
-            "name": "Outlook / Office 365",
-            "description": "Use Outlook SMTP (smtp-mail.outlook.com:587)",
-            "is_oauth": False,
-            "smtp_host": "smtp-mail.outlook.com",
-            "smtp_port": 587,
-            "requires_app_password": True,
-        },
-        {
-            "id": "yahoo",
-            "name": "Yahoo Mail",
-            "description": "Use Yahoo SMTP (smtp.mail.yahoo.com:587)",
-            "is_oauth": False,
-            "smtp_host": "smtp.mail.yahoo.com",
-            "smtp_port": 587,
-            "requires_app_password": True,
-        },
-        {
-            "id": "sendgrid",
-            "name": "SendGrid",
-            "description": "Use SendGrid SMTP (smtp.sendgrid.net:587)",
-            "is_oauth": False,
-            "smtp_host": "smtp.sendgrid.net",
-            "smtp_port": 587,
-            "requires_app_password": False,
-        },
-        {
-            "id": "custom_smtp",
-            "name": "Custom SMTP",
-            "description": "Use your own SMTP server",
-            "is_oauth": False,
-            "smtp_host": "",
-            "smtp_port": 587,
-            "requires_app_password": False,
-        },
-    ]
-    return jsonify(options), 200
 
 @email_alerts_bp.route("/email-alerts/auth-url", methods=["GET"])
 def get_auth_url():
@@ -651,6 +535,84 @@ def trigger_alert_api(alert_type):
         return jsonify({"message": result["reason"]}), 200
     else:
         return jsonify({"message": result["reason"], "queued": "queued" in result.get("reason", "")}), 200
+
+
+# ── Threshold Limits API ──────────────────────────────────────────────
+@email_alerts_bp.route("/email-alerts/threshold-limits", methods=["GET", "POST"])
+def threshold_limits_api():
+    """Get or set threshold limits for email alerts."""
+    config = get_email_config()
+    
+    if request.method == "GET":
+        return jsonify(config.get("threshold_limits", {
+            "min": None,
+            "max": None,
+            "enabled": False,
+        })), 200
+    
+    data = request.json or {}
+    if "threshold_limits" in data:
+        tl = data["threshold_limits"]
+        if "min" in tl:
+            config["threshold_limits"]["min"] = tl["min"]
+        if "max" in tl:
+            config["threshold_limits"]["max"] = tl["max"]
+        if "enabled" in tl:
+            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
+        save_email_config(config)
+    
+    return jsonify({
+        "message": "Threshold limits updated",
+        "threshold_limits": config["threshold_limits"],
+    }), 200
+
+
+# ── Check thresholds (called from streaming loop) ─────────────────────
+def check_thresholds_and_alert(thickness_value, sensor_id="N/A"):
+    """
+    Called from the streaming loop when a new thickness reading arrives.
+    Checks if the value exceeds configured limits and triggers alerts.
+    """
+    if thickness_value is None:
+        return
+    
+    config = get_email_config()
+    if not config.get("enabled", False):
+        return
+    
+    tl = config.get("threshold_limits", {})
+    if not tl.get("enabled", False):
+        return
+    
+    min_limit = tl.get("min")
+    max_limit = tl.get("max")
+    try:
+        thickness = float(thickness_value)
+    except (TypeError, ValueError):
+        return
+    
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    if min_limit is not None and thickness < float(min_limit):
+        trigger_alert(
+            "threshold_below_min",
+            f"ALERT: Thickness Below Minimum Limit",
+            f"Sensor: {sensor_id}<br>"
+            f"Current thickness: <strong>{thickness:.3f} mm</strong><br>"
+            f"Minimum limit: <strong>{float(min_limit):.3f} mm</strong><br>"
+            f"Time: {now_str}"
+        )
+    
+    if max_limit is not None and thickness > float(max_limit):
+        trigger_alert(
+            "threshold_above_max",
+            f"ALERT: Thickness Above Maximum Limit",
+            f"Sensor: {sensor_id}<br>"
+            f"Current thickness: <strong>{thickness:.3f} mm</strong><br>"
+            f"Maximum limit: <strong>{float(max_limit):.3f} mm</strong><br>"
+            f"Time: {now_str}"
+        )
+
 
 # ── Load config on import ──────────────────────────────────────────────
 load_email_config()

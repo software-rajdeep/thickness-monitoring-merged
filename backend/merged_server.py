@@ -535,7 +535,7 @@ from user_routes import register_user_routes
 register_user_routes(app)
 
 # Register email alert routes
-from email_alert_routes import email_alerts_bp
+from email_alert_routes import email_alerts_bp, check_thresholds_and_alert
 app.register_blueprint(email_alerts_bp)
 
 # CORS(app) removed — handled by Traefik middleware
@@ -1018,6 +1018,11 @@ def stream_ingest_loop():
             gap = state.get("gap_distance", 0.0)
             if gap > 0 and "A" in reading and "B" in reading:
                 thickness_val = calculate_opposite_thickness(reading["A"], reading["B"])
+                # Check email alert thresholds for this thickness reading
+                try:
+                    check_thresholds_and_alert(thickness_val, sensor_id="Opposite Sensors")
+                except Exception:
+                    pass  # Don't let alert errors disrupt the stream
             payload = {
                 "timestamp": now.isoformat(),
                 "distance_A": reading.get("A"),
