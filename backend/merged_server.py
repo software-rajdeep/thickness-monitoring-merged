@@ -546,7 +546,7 @@ sensors_lock = threading.Lock()
 thickness_state = load_thickness_state()
 
 stream_state = {
-    "active": False,
+    "active": True,
     "target_rate_hz": 5.0,
     "thread": None,
     "connected_clients": 0
