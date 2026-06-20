@@ -917,36 +917,57 @@ def config_read():
 
 @app.route('/config/write', methods=['POST'])
 def config_write():
-    """Write sensor config register(s). Accepts JSON with 'command' (int), 'value' (int), optional 'sensor'."""
+    """Write sensor config register(s).
+    On server mode, this queues commands for pi_client to poll and execute.
+    Accepts two input formats:
+      1) {"sensor":"A", "command":int, "value":int}
+      2) {"sensor":"A", "addr_h":"0x40", "addr_l":"0x06", "val_h":"0x00", "val_l":"0x03"}
+    """
     data = request.json or {}
+    sensor_id = data.get("sensor", "A").upper()
+    if sensor_id.upper() not in {"A", "B", "C"}:
+        return jsonify({"error": f"Invalid sensor {sensor_id}. Must be A, B, or C."}), 400
+
+    # Determine command and value from either format
     command = data.get("command")
     value = data.get("value")
-    sensor_id = data.get("sensor", "A").upper()
     if command is None or value is None:
-        return jsonify({"error": "Both 'command' and 'value' are required"}), 400
-    if sensor_id not in active_sensors_map:
-        return jsonify({"error": f"Sensor {sensor_id} not found"}), 404
-    sensor = active_sensors_map[sensor_id]
-    cmd_int = int(command)
-    val_int = int(value) & 0xFFFF
-    cmd_lsb = cmd_int & 0xFF
-    cmd_msb = (cmd_int >> 8) & 0xFF
-    val_lsb = val_int & 0xFF
-    val_msb = (val_int >> 8) & 0xFF
-    cmd_bytes = bytes([STX, 0x42, cmd_msb, cmd_lsb, val_msb, val_lsb, ETX, (0x42 ^ cmd_msb ^ cmd_lsb ^ val_msb ^ val_lsb)])
-    try:
-        with sensor.lock:
-            if not sensor.connected and not sensor.connect():
-                return jsonify({"error": f"Cannot connect to sensor {sensor_id}"}), 500
-            sensor.sock.settimeout(0.1)
-            sensor.sock.sendall(cmd_bytes)
-            resp = sensor.sock.recv(6)
-            sensor.sock.settimeout(SENSOR_TIMEOUT)
-        if resp and len(resp) == 6 and resp[1] == 0x06:
-            return jsonify({"sensor": sensor_id, "command": command, "value": value, "success": True}), 200
-        return jsonify({"error": "Write command failed"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Try addr_h/addr_l/val_h/val_l hex format
+        addr_h = data.get("addr_h")
+        addr_l = data.get("addr_l")
+        val_h = data.get("val_h", "0x00")
+        val_l = data.get("val_l")
+        if addr_h is None or addr_l is None or val_l is None:
+            return jsonify({"error": "Provide either 'command'+'value' or 'addr_h'+'addr_l'+'val_l' (with optional 'val_h')"}), 400
+        try:
+            cmd_int = (int(addr_h, 16) << 8) | int(addr_l, 16)
+            val_int = (int(val_h, 16) << 8) | int(val_l, 16)
+        except (ValueError, TypeError) as e:
+            return jsonify({"error": f"Invalid hex value: {e}"}), 400
+    else:
+        try:
+            cmd_int = int(command) & 0xFFFF
+            val_int = int(value) & 0xFFFF
+        except (ValueError, TypeError) as e:
+            return jsonify({"error": f"Invalid command/value: {e}"}), 400
+
+    # Queue the command for pi_client to pick up
+    cmd_entry = {
+        "sensor": sensor_id,
+        "addr_h": f"0x{(cmd_int >> 8) & 0xFF:02X}",
+        "addr_l": f"0x{cmd_int & 0xFF:02X}",
+        "val_h": f"0x{(val_int >> 8) & 0xFF:02X}",
+        "val_l": f"0x{val_int & 0xFF:02X}",
+    }
+    pending_config_commands.append(cmd_entry)
+
+    return jsonify({
+        "sensor": sensor_id,
+        "command": cmd_int,
+        "value": val_int,
+        "success": True,
+        "message": f"Write queued - reg 0x{cmd_int:04X} = 0x{val_int:04X}"
+    }), 200
 
 # ==========================================
 # APIS - STREAM TRIMMING
@@ -961,7 +982,10 @@ def stream_trim():
 @app.route('/stream/config', methods=['POST'])
 def stream_config():
     data = request.json or {}
-    if "target_rate_hz" in data:
+    # Accept both 'rate' (frontend format) and 'target_rate_hz' (internal format)
+    if "rate" in data:
+        stream_state["target_rate_hz"] = float(data["rate"])
+    elif "target_rate_hz" in data:
         stream_state["target_rate_hz"] = float(data["target_rate_hz"])
     return jsonify({"message": "Stream config updated", "target_rate_hz": stream_state["target_rate_hz"]}), 200
 
@@ -969,7 +993,7 @@ def stream_config():
 # PI CLIENT CONFIG POLL ENDPOINTS
 # ==========================================
 # pi_client polls /config/poll every 3 seconds for sensor write commands
-pending_config_commands = []
+# Note: pending_config_commands is declared above (global scope)
 
 @app.route('/config/poll', methods=['GET'])
 def config_poll():
