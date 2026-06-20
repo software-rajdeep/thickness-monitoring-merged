@@ -1028,13 +1028,51 @@ def serve_react(path):
 # ==========================================
 # INGEST STREAMING (WebSocket)
 # ==========================================
+def poll_local_sensors():
+    """Poll locally-connected CD22 sensors directly and return readings dict."""
+    with sensors_lock:
+        if not active_sensors_map:
+            return {}
+        readings = {}
+        for sid in sorted(active_sensors_map.keys()):
+            sensor = active_sensors_map[sid]
+            reading = sensor.get_single_measurement()
+            if reading is not None:
+                readings[sid] = reading
+        return readings
+
 def stream_ingest_loop():
-    """Background thread that emits sensor readings via WebSocket."""
+    """Background thread that emits sensor readings via WebSocket.
+    
+    First tries to use data received via HTTP ingest (/ingest/readings from pi_client).
+    If no ingest data is available, falls back to polling local CD22 sensors directly.
+    """
+    consecutive_empty_readings = 0
     while True:
         if not stream_state["active"]:
             time.sleep(0.1)
             continue
+        
+        # Try to get readings from ingest (pi_client HTTP POST)
         reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
+        
+        # If no ingest data available AND there are active local sensors, poll them directly
+        if not reading and active_sensors_map:
+            local_readings = poll_local_sensors()
+            if local_readings:
+                # Update last_ingest_reading so other endpoints can use the data too
+                for sid, val in local_readings.items():
+                    last_ingest_reading[sid] = val
+                reading = local_readings
+                consecutive_empty_readings = 0
+            else:
+                consecutive_empty_readings += 1
+                # Only log every 100 consecutive failures to avoid spamming
+                if consecutive_empty_readings % 100 == 1:
+                    print(f"[Stream] No sensor data available ({consecutive_empty_readings} consecutive empty reads)")
+        elif reading:
+            consecutive_empty_readings = 0
+        
         if reading:
             now = datetime.datetime.now()
             thickness_val = None
@@ -1055,6 +1093,7 @@ def stream_ingest_loop():
                 "thickness": thickness_val,
             }
             socketio.emit("sensor_reading", payload)
+        
         target_delay = 1.0 / max(stream_state["target_rate_hz"], 1.0)
         time.sleep(target_delay)
 
