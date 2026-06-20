@@ -61,6 +61,17 @@ export default function RunModePage({
     return numericValue.toFixed(3).replace(/\.0+$/, "").replace(/(\.[0-9]*?)0+$/, "$1");
   }
 
+  // Apply calibration: reference + (current_raw - baseline)
+  // Returns null when raw is null; returns raw when not calibrated or no baseline.
+  function applyCalibration(sid, rawValue) {
+    if (rawValue === null || rawValue === undefined) return null;
+    if (!calibrationActive) return rawValue;
+    const baseline = parseFloat(calibrationBaselines[sid]);
+    if (!Number.isFinite(baseline)) return rawValue;
+    const ref = Number.isFinite(calibrationReferenceThickness) ? calibrationReferenceThickness : 0;
+    return parseFloat((ref + (rawValue - baseline)).toFixed(3));
+  }
+
   function closeCalibrationDialog() {
     setCalibrationStep("none");
     setCalibrationValue("");
@@ -109,13 +120,16 @@ export default function RunModePage({
     return latest[key] !== null && latest[key] !== undefined;
   }
 
-  function drawGraph(canvas, dataKey) {
+  function drawGraph(canvas, dataKey, transform = v => v) {
     if (!canvas) return;
     const ctx   = canvas.getContext("2d");
     const W     = canvas.width;
     const H     = canvas.height;
     const slice = [...rows].reverse().slice(0, WINDOW);
-    const vals  = slice.map(r => parseFloat(r[dataKey])).filter(n => !isNaN(n));
+    const vals  = slice.map(r => {
+      const raw = parseFloat(r[dataKey]);
+      return isNaN(raw) ? NaN : transform(raw);
+    }).filter(n => !isNaN(n));
 
     ctx.clearRect(0, 0, W, H);
 
@@ -207,9 +221,9 @@ export default function RunModePage({
     const canvasMap = { A: canvasA, B: canvasB, C: canvasC };
     sensorOrder.forEach((sid) => {
       const key = sensorKeys[sid];
-      if (key) drawGraph(canvasMap[sid]?.current, key);
+      if (key) drawGraph(canvasMap[sid]?.current, key, v => applyCalibration(sid, v));
     });
-  }, [rows, limitActive, minLimit, maxLimit, sensorOrder]);
+  }, [rows, limitActive, minLimit, maxLimit, sensorOrder, thicknessState]);
 
   const latest = rows[0];
 
@@ -415,7 +429,8 @@ export default function RunModePage({
       <div className="stats-grid">
         {sensorOrder.map((sid) => {
           const key = sensorKeys[sid];
-          const value = key ? latest?.[key] : undefined;
+          const raw = key ? latest?.[key] : undefined;
+          const value = applyCalibration(sid, raw ?? null);
           const online = key ? isOnline(key) : false;
           return (
             <div key={sid} className="stat-card">
@@ -443,7 +458,8 @@ export default function RunModePage({
         }}>
           {sensorOrder.map((sid) => {
             const key = sensorKeys[sid];
-            const v = key ? latest?.[key] : undefined;
+            const rawV = key ? latest?.[key] : undefined;
+            const calV = applyCalibration(sid, rawV ?? null);
             const online = key ? isOnline(key) : false;
             const ref = sid === "A" ? canvasA : sid === "B" ? canvasB : canvasC;
             const label = `Sensor ${sid}`;
@@ -469,9 +485,9 @@ export default function RunModePage({
                   </span>
                   <span style={{
                     fontSize: 13, fontFamily: "var(--mono)",
-                    fontWeight: 700, color: getColor(v),
+                    fontWeight: 700, color: getColor(calV),
                   }}>
-                    {v ?? "—"} mm thickness
+                    {calV ?? "—"} mm thickness
                   </span>
                 </div>
                 <canvas
@@ -523,7 +539,7 @@ export default function RunModePage({
                     <td className="td-mono td-dim" style={{ fontSize: 11 }}>{r.ts}</td>
                     {sensorOrder.map((sid) => (
                       <td key={sid} className="td-mono td-r">
-                        {fmtVal(r[sensorKeys[sid]])}
+                        {fmtVal(applyCalibration(sid, r[sensorKeys[sid]] ?? null))}
                       </td>
                     ))}
                   </tr>
