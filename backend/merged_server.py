@@ -463,6 +463,28 @@ def init_db():
             conn.commit()
             print("--- Created default users ---")
 
+        # Ensure id columns have sequences (migration for tables created without SERIAL default)
+        for table, seq in [
+            (DB_TABLE_FILTERED,      "sensor_filtered_readings_id_seq"),
+            (DB_TABLE_UNFILTERED,    "sensor_unfiltered_readings_id_seq"),
+            (DB_TABLE_THICKNESS,     "opposite_thickness_readings_id_seq"),
+            (DB_TABLE_THICKNESS_RAW, "opposite_thickness_raw_readings_id_seq"),
+        ]:
+            cur.execute(
+                "SELECT column_default FROM information_schema.columns "
+                "WHERE table_name=%s AND column_name='id'",
+                (table,)
+            )
+            row = cur.fetchone()
+            if row and row[0] is None:
+                cur.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq}")
+                cur.execute(
+                    f"SELECT setval('{seq}', COALESCE((SELECT MAX(id) FROM {table}), 0))"
+                )
+                cur.execute(f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')")
+                conn.commit()
+                print(f"--- Migrated {table}: added id sequence ---")
+
         cur.close()
         conn.close()
         print("--- Database tables initialized ---")
@@ -1049,27 +1071,81 @@ def poll_local_sensors():
                 readings[sid] = reading
         return readings
 
+def _db_connect():
+    """Open a psycopg2 connection; returns (conn, cur) or (None, None) on failure."""
+    try:
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+        return conn, conn.cursor()
+    except Exception as e:
+        print(f"[Stream DB] connect failed: {e}")
+        return None, None
+
+def _db_write(conn, cur, now, reading, thickness_val):
+    """INSERT one reading into all four sensor tables, then commit."""
+    a = reading.get("A")
+    b = reading.get("B")
+    c = reading.get("C")
+    cur.execute(
+        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
+        (now, a, b, c)
+    )
+    cur.execute(
+        f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
+        (now, a, b, c)
+    )
+    if a is not None and b is not None:
+        cur.execute(
+            f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
+            (now, a, b, thickness_val)
+        )
+        cur.execute(
+            f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
+            (now, a, b, thickness_val)
+        )
+    conn.commit()
+
+def _db_trim(cur, conn):
+    """Delete oldest rows when any table exceeds its row limit."""
+    for table, limit in [
+        (DB_TABLE_FILTERED,      LIMIT_FILTERED),
+        (DB_TABLE_UNFILTERED,    LIMIT_UNFILTERED),
+        (DB_TABLE_THICKNESS,     LIMIT_THICKNESS),
+        (DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW),
+    ]:
+        cur.execute(f"SELECT COUNT(*) FROM {table}")
+        count = cur.fetchone()[0]
+        if count > limit:
+            excess = count - limit
+            cur.execute(
+                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} ORDER BY id ASC LIMIT %s)",
+                (excess,)
+            )
+    conn.commit()
+
 def stream_ingest_loop():
-    """Background thread that emits sensor readings via WebSocket.
-    
+    """Background thread: emits sensor readings via WebSocket and writes them to the DB.
+
     First tries to use data received via HTTP ingest (/ingest/readings from pi_client).
-    If no ingest data is available and NOT in CLOUD_MODE, falls back to polling 
+    If no ingest data is available and NOT in CLOUD_MODE, falls back to polling
     local CD22 sensors directly.
-    
+
     In CLOUD_MODE (KVM server), only uses ingest data — the cloud server can't
     reach sensors on the 192.168.5.x LAN.
     """
     consecutive_empty_readings = 0
+    db_conn, db_cur = _db_connect()
+    inserts_since_trim = 0
+
     while True:
         if not stream_state["active"]:
             time.sleep(0.1)
             continue
-        
+
         # Try to get readings from ingest (pi_client HTTP POST)
         reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
-        
-        # If no ingest data available AND not CLOUD_MODE AND there are active local 
-        # sensors, poll them directly. Skip in CLOUD_MODE — cloud server can't 
+
+        # If no ingest data available AND not CLOUD_MODE AND there are active local
+        # sensors, poll them directly. Skip in CLOUD_MODE — cloud server can't
         # reach sensors on the 192.168.5.x LAN and TCP connections would block.
         if not reading and not CLOUD_MODE and active_sensors_map:
             local_readings = poll_local_sensors()
@@ -1086,7 +1162,7 @@ def stream_ingest_loop():
                     print(f"[Stream] No sensor data available ({consecutive_empty_readings} consecutive empty reads)")
         elif reading:
             consecutive_empty_readings = 0
-        
+
         if reading:
             now = datetime.datetime.now()
             thickness_val = None
@@ -1122,7 +1198,25 @@ def stream_ingest_loop():
                 "thickness": thickness_val,
             }
             socketio.emit("sensor_reading", payload)
-        
+
+            # Write to DB; reconnect once on failure
+            if db_conn is None:
+                db_conn, db_cur = _db_connect()
+            if db_conn is not None:
+                try:
+                    _db_write(db_conn, db_cur, now, reading, thickness_val)
+                    inserts_since_trim += 1
+                    if inserts_since_trim >= 10000:
+                        _db_trim(db_cur, db_conn)
+                        inserts_since_trim = 0
+                except Exception as e:
+                    print(f"[Stream DB] write error: {e}")
+                    try:
+                        db_conn.rollback()
+                    except Exception:
+                        pass
+                    db_conn, db_cur = _db_connect()
+
         target_delay = 1.0 / max(stream_state["target_rate_hz"], 1.0)
         time.sleep(target_delay)
 
