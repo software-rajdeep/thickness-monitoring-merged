@@ -1029,7 +1029,11 @@ def serve_react(path):
 # INGEST STREAMING (WebSocket)
 # ==========================================
 def poll_local_sensors():
-    """Poll locally-connected CD22 sensors directly and return readings dict."""
+    """Poll locally-connected CD22 sensors directly and return readings dict.
+    
+    Only used when NOT in CLOUD_MODE — polls sensors on the local LAN.
+    In CLOUD_MODE, sensors are not reachable (they're on 192.168.5.x LAN).
+    """
     with sensors_lock:
         if not active_sensors_map:
             return {}
@@ -1045,7 +1049,11 @@ def stream_ingest_loop():
     """Background thread that emits sensor readings via WebSocket.
     
     First tries to use data received via HTTP ingest (/ingest/readings from pi_client).
-    If no ingest data is available, falls back to polling local CD22 sensors directly.
+    If no ingest data is available and NOT in CLOUD_MODE, falls back to polling 
+    local CD22 sensors directly.
+    
+    In CLOUD_MODE (KVM server), only uses ingest data — the cloud server can't
+    reach sensors on the 192.168.5.x LAN.
     """
     consecutive_empty_readings = 0
     while True:
@@ -1056,8 +1064,10 @@ def stream_ingest_loop():
         # Try to get readings from ingest (pi_client HTTP POST)
         reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
         
-        # If no ingest data available AND there are active local sensors, poll them directly
-        if not reading and active_sensors_map:
+        # If no ingest data available AND not CLOUD_MODE AND there are active local 
+        # sensors, poll them directly. Skip in CLOUD_MODE — cloud server can't 
+        # reach sensors on the 192.168.5.x LAN and TCP connections would block.
+        if not reading and not CLOUD_MODE and active_sensors_map:
             local_readings = poll_local_sensors()
             if local_readings:
                 # Update last_ingest_reading so other endpoints can use the data too
