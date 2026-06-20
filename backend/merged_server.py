@@ -1078,13 +1078,28 @@ def stream_ingest_loop():
             thickness_val = None
             state = get_thickness_state()
             gap = state.get("gap_distance", 0.0)
-            if gap > 0 and "A" in reading and "B" in reading:
-                thickness_val = calculate_opposite_thickness(reading["A"], reading["B"])
+            if "A" in reading and "B" in reading:
+                if gap > 0:
+                    thickness_val = calculate_opposite_thickness(reading["A"], reading["B"])
+                else:
+                    # Gap not set — compute relative thickness from calibration baselines
+                    cal_baselines = state.get("calibration_baseline_readings", {})
+                    bA = cal_baselines.get("A")
+                    bB = cal_baselines.get("B")
+                    if state.get("calibration_active") and bA is not None and bB is not None:
+                        try:
+                            ref = float(state.get("calibration_reference_thickness", 0.0) or 0.0)
+                            delta_A = float(bA) - float(reading["A"])
+                            delta_B = float(bB) - float(reading["B"])
+                            thickness_val = round(ref + delta_A + delta_B, 3)
+                        except (TypeError, ValueError):
+                            pass
                 # Check email alert thresholds for this thickness reading
-                try:
-                    check_thresholds_and_alert(thickness_val, sensor_id="Opposite Sensors")
-                except Exception:
-                    pass  # Don't let alert errors disrupt the stream
+                if thickness_val is not None:
+                    try:
+                        check_thresholds_and_alert(thickness_val, sensor_id="Opposite Sensors")
+                    except Exception:
+                        pass  # Don't let alert errors disrupt the stream
             payload = {
                 "timestamp": now.isoformat(),
                 "distance_A": reading.get("A"),

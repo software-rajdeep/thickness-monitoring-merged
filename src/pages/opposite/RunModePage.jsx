@@ -35,8 +35,7 @@ export default function RunModePage({
   const gapDistance = thicknessState?.gap_distance || 0;
   const calibrationActive = Boolean(thicknessState?.calibration_active);
   const autoGapActive = Boolean(thicknessState?.auto_gap_active);
-  // For opposite mode, "calibrated" means gap_distance is actually set (> 0)
-  const isCalibrated = gapDistance > 0;
+  const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed) || gapDistance > 0;
 
   const canvasRef = useRef(null);
   const WINDOW = 100;
@@ -483,8 +482,10 @@ export default function RunModePage({
           gap: 10,
         }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
-            {isCalibrated
+            {gapDistance > 0
               ? "Total Gap: " + formatValue(gapDistance) + " mm"
+              : isCalibrated
+              ? "Calibrated (relative measurement)"
               : "Gap not configured - enter the distance between sensors"}
           </div>
         </div>
