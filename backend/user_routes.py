@@ -3,7 +3,6 @@ User Routes
 Provides user CRUD operations and database status.
 """
 import psycopg2
-import json
 from werkzeug.security import generate_password_hash
 from flask import Blueprint, request, jsonify
 
@@ -14,11 +13,6 @@ DB_PASS = "rapl2026"
 DB_TABLE_USERS = "users"
 
 users_bp = Blueprint("users", __name__)
-
-LIMIT_FILTERED = 10_000_000
-LIMIT_UNFILTERED = 1_000_000
-LIMIT_THICKNESS = 10_000_000
-LIMIT_THICKNESS_RAW = 1_000_000
 
 @users_bp.route("/users", methods=["GET"])
 def get_users():
@@ -83,25 +77,25 @@ def db_status():
     try:
         conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
         cur = conn.cursor()
-        
+
         cur.execute("SELECT COUNT(*) FROM sensor_filtered_readings")
         filtered = cur.fetchone()[0]
-        
+
         cur.execute("SELECT COUNT(*) FROM sensor_unfiltered_readings")
         unfiltered = cur.fetchone()[0]
-        
+
         cur.execute("SELECT COUNT(*) FROM opposite_thickness_readings")
         thickness = cur.fetchone()[0]
-        
+
         cur.execute("SELECT COUNT(*) FROM opposite_thickness_raw_readings")
         thickness_raw = cur.fetchone()[0]
-        
+
         cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_USERS}")
         users = cur.fetchone()[0]
-        
+
         cur.close()
         conn.close()
-        
+
         return jsonify({
             "filtered": filtered,
             "unfiltered": unfiltered,
