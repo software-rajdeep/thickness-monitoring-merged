@@ -61,7 +61,8 @@ export default function RunModePage({
     return numericValue.toFixed(3).replace(/\.0+$/, "").replace(/(\.[0-9]*?)0+$/, "$1");
   }
 
-  // Apply calibration: reference + (current_raw - baseline)
+  // Apply calibration: reference + (baseline - current_raw)
+  // Positive when object reduces sensor distance (object closer than calibration surface).
   // Returns null when raw is null; returns raw when not calibrated or no baseline.
   function applyCalibration(sid, rawValue) {
     if (rawValue === null || rawValue === undefined) return null;
@@ -69,7 +70,7 @@ export default function RunModePage({
     const baseline = parseFloat(calibrationBaselines[sid]);
     if (!Number.isFinite(baseline)) return rawValue;
     const ref = Number.isFinite(calibrationReferenceThickness) ? calibrationReferenceThickness : 0;
-    return parseFloat((ref + (rawValue - baseline)).toFixed(3));
+    return parseFloat((ref + (baseline - rawValue)).toFixed(3));
   }
 
   function closeCalibrationDialog() {

@@ -81,7 +81,7 @@ export default function BackendPage({ user }) {
     const iv = setInterval(() => {
       fetchDbStatus();
       fetchServerConfig();
-    }, 10000);
+    }, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -103,6 +103,7 @@ export default function BackendPage({ user }) {
         showToast(`User '${username}' added successfully`, "success");
         setNewUser({ username: "", password: "", role: "worker" });
         fetchUsers();
+        fetchDbStatus();
       } else {
         showToast(data.error || "Failed to add user", "error");
       }
@@ -124,6 +125,7 @@ export default function BackendPage({ user }) {
       if (res.ok) {
         showToast(`User '${username}' deleted`, "success");
         fetchUsers();
+        fetchDbStatus();
       } else {
         showToast(data.error || "Failed to delete user", "error");
       }
