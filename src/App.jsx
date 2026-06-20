@@ -257,9 +257,9 @@ export default function App() {
           ts: data.timestamp
             ? data.timestamp.replace("T", " ").slice(0, 23)
             : new Date().toISOString().replace("T", " ").slice(0, 23),
-          a: data.sensor_A ?? null,
-          b: data.sensor_B ?? null,
-          c: data.sensor_C ?? null,
+          a: data.distance_A ?? null,
+          b: data.distance_B ?? null,
+          c: data.distance_C ?? null,
         };
       }
 
