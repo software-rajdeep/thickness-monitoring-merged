@@ -412,6 +412,48 @@ curl https://194-164-148-145.sslip.io/sensors/status
 → `journalctl -u merged -n 30` on KVM — look for `ImportError` or missing file.
 → Check `backend_files` list in `deploy.py` — a needed file may not be listed.
 
+**Backend files wiped to 0 bytes — `ImportError` on every restart**
+→ Caused by running a one-off upload/deploy script that opens a remote file for
+  write and then crashes before finishing. The file gets truncated to empty.
+→ Symptoms: `merged.service` restarts in a loop, log shows `ImportError: cannot
+  import name 'X' from 'Y'` even though the import looks correct.
+→ Fix: upload all four Python files from the Windows repo in one shot, then restart:
+```python
+# Run from the Windows machine (py -3 inline or as a script):
+import paramiko, json
+kvm = paramiko.SSHClient(); kvm.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+kvm.connect('194.164.148.145', username='root', password='Federer7roger@', timeout=15)
+sftp = kvm.open_sftp()
+for fname in ['merged_server.py','user_routes.py','download_routes.py','email_alert_routes.py']:
+    sftp.put(rf'C:\Users\admin\Documents\merged\backend\{fname}', f'/opt/merged/backend/{fname}')
+sftp.close()
+kvm.exec_command('systemctl restart merged')
+kvm.close()
+```
+→ **Prevention: never leave ad-hoc upload/fix scripts (`upload_backend.py`,
+  `deploy_fix.py`, `run_deploy.py`, etc.) in the repo root.** Use only
+  `deploy.py` for all KVM deploys.
+
+**SBS live readings show "—" / no data despite sensor being connected**
+→ The socket.io `sensor_reading` event always carries fields named `distance_A`,
+  `distance_B`, `distance_C` (and `thickness`). The SBS socket handler in
+  `App.jsx` must read those exact names. If it reads `sensor_A`/`sensor_B`/
+  `sensor_C` instead, every value is `null` and the UI shows dashes silently.
+→ Check `src/App.jsx` in the `socket.on("sensor_reading", ...)` handler — the
+  `else` branch (SBS mode) must use `data.distance_A`, `data.distance_B`,
+  `data.distance_C`, not `data.sensor_A` etc.
+
+**Opposite mode thickness shows "—" after calibration**
+→ The stream loop only calculates thickness when `gap_distance > 0`. The
+  `/thickness/calibration` endpoint (used by SBS calibration and the opposite
+  mode "Calibrate" button) captures baseline readings but does NOT set
+  `gap_distance`. Result: thickness is always null even after calibration.
+→ The stream loop now has a fallback: when `gap_distance = 0` but
+  `calibration_active = true` with baselines captured, it computes:
+  `thickness = reference_thickness + (baseline_A − current_A) + (baseline_B − current_B)`
+→ If thickness still shows "—", check `calibration_active` is `true` in
+  `GET /thickness/state`. If not, the user needs to press Calibrate again.
+
 **WebSocket not connecting**
 → Traefik proxies WebSocket automatically. Check the browser console for the
   exact error. Confirm `cors_allowed_origins='*'` is still set in the
