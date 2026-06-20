@@ -534,6 +534,10 @@ app = Flask(__name__)
 from user_routes import register_user_routes
 register_user_routes(app)
 
+# Register download routes
+from download_routes import register_download_routes
+register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW)
+
 # Register email alert routes
 from email_alert_routes import email_alerts_bp, check_thresholds_and_alert
 app.register_blueprint(email_alerts_bp)
