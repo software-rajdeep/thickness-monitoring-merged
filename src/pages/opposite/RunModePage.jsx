@@ -35,7 +35,8 @@ export default function RunModePage({
   const gapDistance = thicknessState?.gap_distance || 0;
   const calibrationActive = Boolean(thicknessState?.calibration_active);
   const autoGapActive = Boolean(thicknessState?.auto_gap_active);
-  const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed);
+  // For opposite mode, "calibrated" means gap_distance is actually set (> 0)
+  const isCalibrated = gapDistance > 0;
 
   const canvasRef = useRef(null);
   const WINDOW = 100;
