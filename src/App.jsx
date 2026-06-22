@@ -27,7 +27,8 @@ import OppBackendPage      from "./pages/opposite/BackendPage";
 import OppTopbar  from "./layout/opposite/Topbar";
 import OppSidebar from "./layout/opposite/Sidebar";
 
-import { SERVER } from "./constants/config";
+import { SERVER, fetchSensorConfigs as fetchSbsConfigs } from "./constants/config";
+import { fetchSensorConfigs as fetchOppConfigs } from "./constants/config_opposite";
 
 export default function App() {
   const [sensorMode,  setSensorMode]  = useState(null); // null | "side-by-side" | "opposite"
@@ -42,6 +43,9 @@ export default function App() {
   const [calibrationBusy, setCalibrationBusy] = useState(false);
   const [runModeVisitKey, setRunModeVisitKey] = useState(0);
 
+  // Thickness limit state persists across page navigations
+  const [thicknessLimit, setThicknessLimit] = useState({ active: false, min: "", max: "" });
+
   const socketRef       = useRef(null);
   const counterRef      = useRef(1);
   const dataBufferRef   = useRef([]);
@@ -50,6 +54,14 @@ export default function App() {
   // ── Mode selection ─────────────────────────────────────────────────────
   function handleSelectMode(mode) {
     setSensorMode(mode);
+    // Fetch sensor configs from server (dynamic, not hardcoded)
+    const fetcher = mode === "opposite" ? fetchOppConfigs : fetchSbsConfigs;
+    fetcher(mode === "opposite" ? "opposite" : "sbs").then(configs => {
+      if (Object.keys(configs).length === 0) {
+        console.warn("No sensor configs received from server.");
+        console.warn("Ensure sensor_network.json exists on the server.");
+      }
+    });
   }
 
   // ── Shared helpers ──────────────────────────────────────────────────────
@@ -313,6 +325,7 @@ export default function App() {
     setThicknessState(null);
     setCalibrationBusy(false);
     setRunModeVisitKey(0);
+    setThicknessLimit({ active: false, min: "", max: "" });
     try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
     dataBufferRef.current   = [];
     counterRef.current      = 1;
@@ -399,6 +412,8 @@ export default function App() {
                 onResetGap={handleResetGap}
                 calibrationBusy={calibrationBusy}
                 runModeVisitKey={runModeVisitKey}
+                thicknessLimit={thicknessLimit}
+                setThicknessLimit={setThicknessLimit}
               />
             ) : (
               <SbsRunModePage
@@ -412,6 +427,8 @@ export default function App() {
                 onResetCalibration={handleResetCalibration}
                 calibrationBusy={calibrationBusy}
                 runModeVisitKey={runModeVisitKey}
+                thicknessLimit={thicknessLimit}
+                setThicknessLimit={setThicknessLimit}
               />
             )
           )}

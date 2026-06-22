@@ -14,6 +14,7 @@ import threading
 import time
 import json
 import os
+import sys
 import datetime
 import requests
 
@@ -35,12 +36,7 @@ ETX       = 0x03
 CMD_READ  = 0x52
 CMD_WRITE = 0x57
 
-DEFAULT_SENSOR_CONFIGS = {
-    "A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A"},
-    "B": {"ip": "192.168.1.201", "port": 8234, "name": "Sensor B"},
-    "C": {"ip": "192.168.1.202", "port": 8234, "name": "Sensor C"},
-}
-
+DEFAULT_SENSOR_CONFIGS = {}
 CONNECT_TIMEOUT         = 1.0
 RECONNECT_BACKOFF       = 30.0
 RECONNECT_BACKOFF_RETRY = 5.0
@@ -143,23 +139,37 @@ class CD22Sensor:
 
 
 def load_network_config():
+    """Load sensor network config from JSON file. Exits with error if file missing."""
     if not os.path.exists(NETWORK_CONFIG_FILE):
-        return DEFAULT_SENSOR_CONFIGS.copy()
+        print(f"ERROR: {NETWORK_CONFIG_FILE} not found!")
+        print("Please create this file with your sensor IP addresses.")
+        print("Example format:")
+        print('  {"A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A"}}')
+        sys.exit(1)
     try:
         with open(NETWORK_CONFIG_FILE) as f:
             data = json.load(f)
+        if not data:
+            print(f"ERROR: {NETWORK_CONFIG_FILE} is empty!")
+            print("Please add at least one sensor to the file.")
+            sys.exit(1)
         configs = {}
-        for sid, defaults in DEFAULT_SENSOR_CONFIGS.items():
-            entry = data.get(sid, {})
-            configs[sid] = {
-                "ip":   str(entry.get("ip",   defaults["ip"])),
-                "port": int(entry.get("port", defaults["port"])),
-                "name": str(entry.get("name", defaults["name"])),
+        for sid, entry in data.items():
+            sid_upper = sid.upper()
+            ip = entry.get("ip")
+            if not ip:
+                print(f"ERROR: Sensor {sid_upper} has no 'ip' field in {NETWORK_CONFIG_FILE}!")
+                print(f"  Please add: \"{sid_upper}\": {{\"ip\": \"YOUR_SENSOR_IP\", \"port\": 8234, \"name\": \"Sensor {sid_upper}\"}}")
+                sys.exit(1)
+            configs[sid_upper] = {
+                "ip":   str(ip),
+                "port": int(entry.get("port", 8234)),
+                "name": str(entry.get("name", f"Sensor {sid_upper}")),
             }
         return configs
     except Exception as e:
-        print(f"Failed to load sensor_network.json: {e}. Using defaults.")
-        return DEFAULT_SENSOR_CONFIGS.copy()
+        print(f"Failed to load {NETWORK_CONFIG_FILE}: {e}")
+        sys.exit(1)
 
 
 def main():

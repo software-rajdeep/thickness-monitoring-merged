@@ -64,32 +64,32 @@ ETX = 0x03
 # CONFIG FILE HELPERS
 # ==========================================
 def init_config_file():
-    """Creates a default JSON config file if one doesn't exist."""
+    """Creates an empty sensor_config.json if one doesn't exist."""
     try:
         if not os.path.exists(CONFIG_FILE_PATH):
-            print("--- Creating default sensor_config.json ---")
-            default_config = {
-                "A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A"},
-                "B": {"ip": "192.168.1.201", "port": 8234, "name": "Sensor B"},
-                "C": {"ip": "192.168.1.202", "port": 8234, "name": "Sensor C"},
-            }
+            print("--- Creating empty sensor_config.json ---")
+            print("  WARNING: sensor_config.json not found. Created empty file.")
+            print("  You MUST configure your sensors in sensor_network.json (see README).")
             with open(CONFIG_FILE_PATH, 'w') as f:
-                json.dump(default_config, f, indent=4)
+                json.dump({}, f, indent=4)
     except Exception as e:
         print(f"Warning: Could not init config file: {e}")
 
 def init_network_config_file():
-    """Creates a default network config JSON file if one doesn't exist."""
+    """Creates a sample sensor_network.json if one doesn't exist."""
     try:
         if not os.path.exists(NETWORK_CONFIG_FILE_PATH):
-            print("--- Creating default sensor_network.json ---")
-            default_config = {
+            print("--- Creating sample sensor_network.json ---")
+            print("  WARNING: sensor_network.json not found.")
+            print("  Please edit this file with your sensor IP addresses.")
+            sample_config = {
                 "A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A", "sensor_type": "cd22"},
                 "B": {"ip": "192.168.1.201", "port": 8234, "name": "Sensor B", "sensor_type": "cd22"},
-                "C": {"ip": "192.168.1.202", "port": 8234, "name": "Sensor C", "sensor_type": "cd22"},
             }
             with open(NETWORK_CONFIG_FILE_PATH, 'w') as f:
-                json.dump(default_config, f, indent=4)
+                json.dump(sample_config, f, indent=4)
+            print(f"  Created sample file at: {NETWORK_CONFIG_FILE_PATH}")
+            print("  Edit it to match your actual sensor network before starting the server.")
     except Exception as e:
         print(f"Warning: Could not init network config file: {e}")
 
@@ -147,11 +147,11 @@ def rebuild_active_sensors():
         active_sensors_map.clear()
         config = load_network_config()
         if not config:
-            config = SENSOR_CONFIGS
+            print("  [Config] No sensor_network.json found or file is empty. No sensors activated.")
+            print("  [Config] Create sensor_network.json with your sensor configurations.")
+            return
         for sensor_id, cfg in config.items():
             sid_upper = sensor_id.upper()
-            if sid_upper not in {"A", "B", "C"}:
-                continue
             if cfg.get("reconnect", True) is False:
                 print(f"  [Config] Sensor {sid_upper} disabled (reconnect=false) — skipping")
                 continue
@@ -168,11 +168,8 @@ def refresh_sensor_configs(new_config=None):
     else:
         SENSOR_CONFIGS = load_network_config()
         if not SENSOR_CONFIGS:
-            SENSOR_CONFIGS = {
-                "A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A"},
-                "B": {"ip": "192.168.1.201", "port": 8234, "name": "Sensor B"},
-                "C": {"ip": "192.168.1.202", "port": 8234, "name": "Sensor C"},
-            }
+            print("  [Config] WARNING: sensor_network.json is missing or empty.")
+            print("  [Config] Create sensor_network.json with your sensor configurations.")
     rebuild_active_sensors()
 
 # ==========================================
