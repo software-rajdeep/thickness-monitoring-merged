@@ -37,7 +37,7 @@ the Ubuntu PC to make changes.
 ## Architecture
 
 ```
-CD22 Sensors (wired LAN 192.168.5.200-201)
+CD22 Sensors (wired LAN 192.168.1.200-201)
         │  TCP binary protocol port 8234
         ▼  (reached via enp3s0 wired interface — NOT WiFi)
 Ubuntu PC — 192.168.5.13  (primary dev + pi_client machine)
@@ -231,7 +231,7 @@ The Ubuntu PC has two network interfaces:
 | `wlx002e2d1034b9` (WiFi) | `192.168.5.x` (static 192.168.5.13) | Internet + KVM access |
 
 **Critical:** Both interfaces share the `192.168.5.x` IP range, but they are on
-**different physical switch segments**. The sensors (192.168.5.200, 192.168.5.201)
+**different physical switch segments**. The sensors (192.168.1.200, 192.168.1.201)
 are only reachable via `enp3s0` (wired). WiFi cannot reach them even though the
 IPs are in the same subnet. **If `enp3s0` has no IP, all sensors show "offline".**
 
@@ -375,8 +375,8 @@ Mode is chosen on the frontend start screen; it is not a server config.
 The backend infers mode from `sensor_network.json`: 2 sensors = Opposite, 3 = SBS.
 
 Current sensor IPs (in `backend/sensor_network.json`, also configurable from the Backend page):
-- Sensor A: `192.168.5.200:8234`
-- Sensor B: `192.168.5.201:8234`
+- Sensor A: `192.168.1.200:8234`
+- Sensor B: `192.168.1.201:8234`
 
 Both sensors are on the **wired LAN** — reachable only via `enp3s0` on the Ubuntu PC.
 If you add a third sensor for SBS mode, add it as `"C"` in `sensor_network.json` and
@@ -486,8 +486,8 @@ kvm.close()
 ip addr show enp3s0          # must show "inet 192.168.5.x" — if blank, run next line
 nmcli connection up "Wired connection 1"
 # Verify sensors now reachable:
-ping -c 2 192.168.5.200
-ping -c 2 192.168.5.201
+ping -c 2 192.168.1.200
+ping -c 2 192.168.1.201
 # Then restart pi_client to clear the 30 s reconnect backoff:
 sudo systemctl restart pi-merged-client
 ```
