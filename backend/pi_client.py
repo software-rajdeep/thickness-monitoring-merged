@@ -37,8 +37,8 @@ CMD_WRITE = 0x57
 
 DEFAULT_SENSOR_CONFIGS = {
     "A": {"ip": "192.168.1.200", "port": 8234, "name": "Sensor A"},
-    "B": {"ip": "192.168.1.8", "port": 8234, "name": "Sensor B"},
-    "C": {"ip": "192.168.1.9", "port": 8234, "name": "Sensor C"},
+    "B": {"ip": "192.168.1.201", "port": 8234, "name": "Sensor B"},
+    "C": {"ip": "192.168.1.202", "port": 8234, "name": "Sensor C"},
 }
 
 CONNECT_TIMEOUT         = 1.0
