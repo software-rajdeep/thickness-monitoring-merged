@@ -141,7 +141,16 @@ ubuntu.connect('192.168.5.13', username='linux', password='linux', timeout=15)
 print("\n[Ubuntu] Uploading backend files to merged-version...")
 sftp2 = ubuntu.open_sftp()
 # Ensure add-kvm-route.sh exists so ExecStartPre in the service works
-route_sh = '#!/bin/bash\n/sbin/ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9 2>/dev/null || true\nexit 0\n'
+route_sh = (
+    '#!/bin/bash\n'
+    '# Bring up wired sensor interface (enp3s0) if not already active.\n'
+    '# Sensors A and B are on 192.168.5.x via the wired switch — WiFi cannot reach them.\n'
+    'nmcli connection show --active | grep -q "Wired connection 1" \\\n'
+    '  || nmcli connection up "Wired connection 1" 2>/dev/null\n'
+    '# Ensure route to KVM cloud server goes via WiFi gateway.\n'
+    '/sbin/ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9 2>/dev/null || true\n'
+    'exit 0\n'
+)
 upload_text(sftp2, route_sh, '/home/linux/add-kvm-route.sh')
 run(ubuntu, 'chmod +x /home/linux/add-kvm-route.sh')
 for fname in ["pi_client.py", "sensor_network.json", "merged_server.py",

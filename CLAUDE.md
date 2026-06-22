@@ -37,9 +37,9 @@ the Ubuntu PC to make changes.
 ## Architecture
 
 ```
-CD22 Sensors (LAN 192.168.1.x)
+CD22 Sensors (wired LAN 192.168.5.200-201)
         │  TCP binary protocol port 8234
-        ▼
+        ▼  (reached via enp3s0 wired interface — NOT WiFi)
 Ubuntu PC — 192.168.5.13  (primary dev + pi_client machine)
   ~/merged-version/          ← repo lives here
   systemd: pi-merged-client  ← runs backend/pi_client.py, always-on
@@ -218,7 +218,8 @@ sudo journalctl -u pi-merged-client -f
 
 The service file (`/etc/systemd/system/pi-merged-client.service`) runs
 `/home/linux/add-kvm-route.sh` as root via `ExecStartPre` before starting.
-That script ensures the route to the KVM is in place on every start.
+That script **both brings up the wired sensor interface AND ensures the KVM route
+is in place** on every start.
 
 ### Ubuntu PC Network Setup (Important)
 
@@ -226,27 +227,39 @@ The Ubuntu PC has two network interfaces:
 
 | Interface | Network | Purpose |
 |-----------|---------|---------|
-| `enp3s0` (wired) | `192.168.1.x` | Connects to CD22 sensors |
-| `wlx002e2d1034b9` (WiFi) | `192.168.5.x` | Internet access → KVM |
+| `enp3s0` (wired) | `192.168.5.x` (DHCP, gets ~192.168.5.7) | **Sensor LAN** — CD22 sensors are on this physical switch |
+| `wlx002e2d1034b9` (WiFi) | `192.168.5.x` (static 192.168.5.13) | Internet + KVM access |
 
-**The wired router (`192.168.1.1`) has no internet.** It only serves the sensor
-LAN. Without intervention, Linux picks the wired interface as the default route
-(lower metric), which blocks all traffic to the KVM.
+**Critical:** Both interfaces share the `192.168.5.x` IP range, but they are on
+**different physical switch segments**. The sensors (192.168.5.200, 192.168.5.201)
+are only reachable via `enp3s0` (wired). WiFi cannot reach them even though the
+IPs are in the same subnet. **If `enp3s0` has no IP, all sensors show "offline".**
 
-Two permanent fixes are in place:
+Three permanent fixes are in place:
 
-1. **NetworkManager profile** — `Wired connection 1` has `ipv4.never-default yes`
-   so it never takes the default route. `VIRUSRSS2.4 2` (WiFi) has a static route
-   to `194.164.148.145/32` via `192.168.5.1` baked into the connection profile.
+1. **NetworkManager profile** — `Wired connection 1` has `ipv4.method auto`,
+   `ipv4.never-default yes` (so the wired interface never hijacks the default
+   route away from WiFi), and `connection.autoconnect yes`.
 
-2. **Service ExecStartPre** — `/home/linux/add-kvm-route.sh` adds the KVM route
-   before pi_client starts (belt-and-suspenders).
+2. **Service ExecStartPre** — `/home/linux/add-kvm-route.sh` checks whether
+   `Wired connection 1` is active and brings it up if not, then adds the KVM
+   route via WiFi. Runs as root before pi_client starts.
+
+3. **KVM route** — `add-kvm-route.sh` explicitly adds `194.164.148.145/32 via
+   192.168.5.1 dev wlx002e2d1034b9` so KVM traffic never accidentally flows via
+   the wired interface.
 
 If the KVM becomes unreachable from the Ubuntu PC, check:
 ```bash
 ip route show                          # should show 194.164.148.145 via 192.168.5.1
 ping 194.164.148.145                   # should respond
 sudo ip route add 194.164.148.145/32 via 192.168.5.1 dev wlx002e2d1034b9
+```
+
+If sensors show offline, check:
+```bash
+ip addr show enp3s0                    # must have a 192.168.5.x inet address
+nmcli connection up "Wired connection 1"   # bring it up if missing
 ```
 
 ### email_alert_config.json
@@ -361,10 +374,13 @@ python3 merged_server.py
 Mode is chosen on the frontend start screen; it is not a server config.
 The backend infers mode from `sensor_network.json`: 2 sensors = Opposite, 3 = SBS.
 
-Default sensor IPs (configurable from the Backend page in the app):
+Current sensor IPs (in `backend/sensor_network.json`, also configurable from the Backend page):
 - Sensor A: `192.168.5.200:8234`
 - Sensor B: `192.168.5.201:8234`
-- Sensor C: `192.168.5.202:8234` (SBS only)
+
+Both sensors are on the **wired LAN** — reachable only via `enp3s0` on the Ubuntu PC.
+If you add a third sensor for SBS mode, add it as `"C"` in `sensor_network.json` and
+run `python3 deploy.py` to push the updated config to both the KVM and the Ubuntu PC.
 
 ---
 
@@ -462,6 +478,33 @@ kvm.close()
 **git pull blocked**
 → `git config --global http.sslVerify false` then retry, or use phone hotspot.
 
+**pi_client logs say "All sensors offline — skipping POST"**
+→ The Ubuntu PC cannot reach the sensors. Root cause is almost always that the
+  wired interface (`enp3s0`) has no IP address and is therefore on a different
+  network segment from the sensors. Check and fix:
+```bash
+ip addr show enp3s0          # must show "inet 192.168.5.x" — if blank, run next line
+nmcli connection up "Wired connection 1"
+# Verify sensors now reachable:
+ping -c 2 192.168.5.200
+ping -c 2 192.168.5.201
+# Then restart pi_client to clear the 30 s reconnect backoff:
+sudo systemctl restart pi-merged-client
+```
+→ To prevent this on reboot: ensure `connection.autoconnect yes` is set:
+```bash
+nmcli -f connection.autoconnect connection show "Wired connection 1"
+# If "no", fix with:
+nmcli connection modify "Wired connection 1" connection.autoconnect yes
+```
+→ The `add-kvm-route.sh` (run by ExecStartPre) also brings up the wired
+  connection automatically. If the service is not running, start it:
+```bash
+sudo systemctl start pi-merged-client
+```
+
 **After Ubuntu PC reboot — sensors stop showing**
-→ The route fix and `Restart=always` in the service should handle this automatically.
-→ If not: `sudo systemctl start pi-merged-client` and check `ip route show`.
+→ `add-kvm-route.sh` (ExecStartPre) brings up `Wired connection 1` and adds the
+  KVM route automatically on every service start. This should be self-healing.
+→ If sensors are still offline after reboot: `sudo systemctl restart pi-merged-client`
+  and check `ip addr show enp3s0` shows a 192.168.5.x address.
