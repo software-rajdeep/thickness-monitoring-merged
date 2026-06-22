@@ -306,6 +306,37 @@ def trigger_alert(alert_type, title, details):
     else:
         return {"success": False, "reason": error}
 
+def check_thresholds_and_alert(thickness, sensor_id="Opposite Sensors"):
+    """Check thickness against configured threshold limits and trigger alert if out of range.
+    Called from the stream loop in merged_server.py.
+    """
+    config = get_email_config()
+    if not config.get("enabled", False):
+        return
+    threshold_limits = config.get("threshold_limits", {})
+    if not threshold_limits.get("enabled", False):
+        return
+    min_val = threshold_limits.get("min")
+    max_val = threshold_limits.get("max")
+    if min_val is None and max_val is None:
+        return
+    alerts_config = config.get("alerts", {})
+    try:
+        t = float(thickness)
+    except (TypeError, ValueError):
+        return
+    alert_triggered = False
+    details = ""
+    if min_val is not None and t < float(min_val):
+        alert_triggered = True
+        details = f"Thickness {t:.3f} mm is BELOW minimum threshold {float(min_val):.3f} mm"
+    elif max_val is not None and t > float(max_val):
+        alert_triggered = True
+        details = f"Thickness {t:.3f} mm is ABOVE maximum threshold {float(max_val):.3f} mm"
+    if alert_triggered:
+        if alerts_config.get("threshold_below_min", True) or alerts_config.get("threshold_above_max", True):
+            trigger_alert("threshold_out_of_tolerance", f"{sensor_id} - Threshold Alert", details)
+
 def flush_queued_alerts():
     with _alert_queue_lock:
         if not _alert_queue:
