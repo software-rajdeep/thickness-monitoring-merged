@@ -73,6 +73,62 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/download/thickness', methods=['GET'])
+    def download_thickness():
+        if not DB_TABLE_THICKNESS:
+            return jsonify({"error": "Thickness table not configured"}), 404
+        try:
+            conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+            cur  = conn.cursor()
+            cur.execute(f"""
+                SELECT id, timestamp, sensor_a, sensor_b, thickness
+                FROM {DB_TABLE_THICKNESS}
+                ORDER BY timestamp ASC
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
+            writer.writerows(rows)
+            output.seek(0)
+            return Response(
+                output.getvalue(),
+                mimetype="text/csv",
+                headers={"Content-Disposition": "attachment; filename=thickness_data.csv"}
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/download/thickness/raw', methods=['GET'])
+    def download_thickness_raw():
+        if not DB_TABLE_THICKNESS_RAW:
+            return jsonify({"error": "Raw thickness table not configured"}), 404
+        try:
+            conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+            cur  = conn.cursor()
+            cur.execute(f"""
+                SELECT id, timestamp, sensor_a, sensor_b, thickness
+                FROM {DB_TABLE_THICKNESS_RAW}
+                ORDER BY timestamp ASC
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
+            writer.writerows(rows)
+            output.seek(0)
+            return Response(
+                output.getvalue(),
+                mimetype="text/csv",
+                headers={"Content-Disposition": "attachment; filename=thickness_raw_data.csv"}
+            )
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/db/status', methods=['GET'])
     def db_status():
         try:
