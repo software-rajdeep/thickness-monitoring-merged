@@ -1,6 +1,6 @@
 """
 Email Alert Routes
-Provides Gmail API integration (OAuth) only - SMTP removed.
+Provides Gmail API integration (OAuth) and SMTP fallback for alert notifications.
 Only accessible by Super Admin.
 """
 import json
@@ -8,6 +8,8 @@ import os
 import threading
 import time
 import datetime
+import smtplib
+import ssl
 import base64
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -16,6 +18,12 @@ from flask import Blueprint, request, jsonify
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EMAIL_CONFIG_PATH = os.path.join(BASE_DIR, "email_alert_config.json")
 TOKEN_PATH = os.path.join(BASE_DIR, "gmail_token.json")
+
+# Allow overriding the OAuth redirect URI via environment variable (for ngrok HTTPS)
+OAUTH_REDIRECT_URI = os.environ.get(
+    "OAUTH_REDIRECT_URI",
+    "http://localhost:5000/email-alerts/oauth-callback"
+)
 
 # ── Google API imports (lazy-loaded so the module works without them) ──
 try:
@@ -33,7 +41,14 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 # ── Default Configuration ──────────────────────────────────────────────
 DEFAULT_CONFIG = {
     "enabled": False,
-    "api_type": "gmail_oauth",
+    "api_type": "gmail_oauth",  # "gmail_oauth", "gmail_smtp", "outlook", "custom_smtp"
+    "smtp_config": {
+        "host": "smtp.gmail.com",
+        "port": 587,
+        "use_tls": True,
+        "email": "",
+        "password": "",
+    },
     "recipient_email": "",
     "alerts": {
         "threshold_below_min": True,
@@ -50,11 +65,6 @@ DEFAULT_CONFIG = {
     "summary_report": {
         "enabled": False,
         "frequency": "daily",
-    },
-    "threshold_limits": {
-        "min": None,
-        "max": None,
-        "enabled": False,
     },
 }
 
@@ -174,6 +184,48 @@ def send_via_gmail_api(subject, body_html, body_plain, recipient):
     except Exception as e:
         return False, f"Gmail API error: {str(e)}"
 
+# ── SMTP Email Sending (fallback) ──────────────────────────────────────
+def send_via_smtp(subject, body_html, body_plain, recipient):
+    """Send email using SMTP (for Gmail SMTP, Outlook, custom)."""
+    config = get_email_config()
+    smtp_cfg = config.get("smtp_config", {})
+    sender_email = smtp_cfg.get("email", "").strip()
+    password = smtp_cfg.get("password", "").strip()
+
+    if not sender_email or not password:
+        return False, "SMTP credentials not configured"
+
+    host = smtp_cfg.get("host", "smtp.gmail.com")
+    port = smtp_cfg.get("port", 587)
+    use_tls = smtp_cfg.get("use_tls", True)
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender_email
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_plain, "plain"))
+    msg.attach(MIMEText(body_html, "html"))
+
+    with _email_lock:
+        try:
+            if use_tls:
+                context = ssl.create_default_context()
+                with smtplib.SMTP(host, port, timeout=10) as server:
+                    server.starttls(context=context)
+                    server.login(sender_email, password)
+                    server.sendmail(sender_email, recipient, msg.as_string())
+            else:
+                with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                    server.login(sender_email, password)
+                    server.sendmail(sender_email, recipient, msg.as_string())
+            return True, None
+        except smtplib.SMTPAuthenticationError:
+            return False, "SMTP authentication failed. Check email/password."
+        except smtplib.SMTPException as e:
+            return False, f"SMTP error: {str(e)}"
+        except Exception as e:
+            return False, f"Failed to send email: {str(e)}"
+
 # ── Email Sending ──────────────────────────────────────────────────────
 def build_email_body(subject, body_content):
     """Build HTML and plain text email body."""
@@ -202,7 +254,7 @@ def build_email_body(subject, body_content):
 
 def send_email(subject, body_content):
     """
-    Send an email using Gmail API.
+    Send an email using the configured method.
     Returns (success: bool, error_message: str or None)
     """
     config = get_email_config()
@@ -214,7 +266,12 @@ def send_email(subject, body_content):
         return False, "No recipient email configured"
 
     html_body, plain_text = build_email_body(subject, body_content)
-    return send_via_gmail_api(subject, html_body, plain_text, recipient)
+    api_type = config.get("api_type", "gmail_oauth")
+
+    if api_type == "gmail_oauth":
+        return send_via_gmail_api(subject, html_body, plain_text, recipient)
+    else:
+        return send_via_smtp(subject, html_body, plain_text, recipient)
 
 # ── Alert Triggering API ──────────────────────────────────────────────
 def trigger_alert(alert_type, title, details):
@@ -248,6 +305,37 @@ def trigger_alert(alert_type, title, details):
         return {"success": True, "reason": "Alert sent successfully"}
     else:
         return {"success": False, "reason": error}
+
+def check_thresholds_and_alert(thickness, sensor_id="Opposite Sensors"):
+    """Check thickness against configured threshold limits and trigger alert if out of range.
+    Called from the stream loop in merged_server.py.
+    """
+    config = get_email_config()
+    if not config.get("enabled", False):
+        return
+    threshold_limits = config.get("threshold_limits", {})
+    if not threshold_limits.get("enabled", False):
+        return
+    min_val = threshold_limits.get("min")
+    max_val = threshold_limits.get("max")
+    if min_val is None and max_val is None:
+        return
+    alerts_config = config.get("alerts", {})
+    try:
+        t = float(thickness)
+    except (TypeError, ValueError):
+        return
+    alert_triggered = False
+    details = ""
+    if min_val is not None and t < float(min_val):
+        alert_triggered = True
+        details = f"Thickness {t:.3f} mm is BELOW minimum threshold {float(min_val):.3f} mm"
+    elif max_val is not None and t > float(max_val):
+        alert_triggered = True
+        details = f"Thickness {t:.3f} mm is ABOVE maximum threshold {float(max_val):.3f} mm"
+    if alert_triggered:
+        if alerts_config.get("threshold_below_min", True) or alerts_config.get("threshold_above_max", True):
+            trigger_alert("threshold_out_of_tolerance", f"{sensor_id} - Threshold Alert", details)
 
 def flush_queued_alerts():
     with _alert_queue_lock:
@@ -388,6 +476,8 @@ email_alerts_bp = Blueprint("email_alerts", __name__)
 def get_email_alert_config():
     config = get_email_config()
     safe_config = json.loads(json.dumps(config))
+    if "smtp_config" in safe_config:
+        safe_config["smtp_config"]["password"] = "********" if safe_config["smtp_config"].get("password") else ""
     # Check if Gmail OAuth is authenticated
     safe_config["gmail_authenticated"] = os.path.exists(TOKEN_PATH)
     return jsonify(safe_config), 200
@@ -403,6 +493,19 @@ def update_email_alert_config():
         config["api_type"] = str(data["api_type"])
     if "recipient_email" in data:
         config["recipient_email"] = str(data["recipient_email"]).strip()
+
+    if "smtp_config" in data:
+        smtp = data["smtp_config"]
+        if "host" in smtp:
+            config["smtp_config"]["host"] = str(smtp["host"])
+        if "port" in smtp:
+            config["smtp_config"]["port"] = int(smtp["port"])
+        if "use_tls" in smtp:
+            config["smtp_config"]["use_tls"] = bool(smtp["use_tls"])
+        if "email" in smtp:
+            config["smtp_config"]["email"] = str(smtp["email"]).strip()
+        if "password" in smtp and smtp["password"] and smtp["password"] != "********":
+            config["smtp_config"]["password"] = smtp["password"]
 
     if "alerts" in data:
         for key in config["alerts"]:
@@ -420,15 +523,6 @@ def update_email_alert_config():
             config["summary_report"]["enabled"] = bool(data["summary_report"]["enabled"])
         if "frequency" in data["summary_report"]:
             config["summary_report"]["frequency"] = str(data["summary_report"]["frequency"])
-
-    if "threshold_limits" in data:
-        tl = data["threshold_limits"]
-        if "min" in tl:
-            config["threshold_limits"]["min"] = tl["min"]
-        if "max" in tl:
-            config["threshold_limits"]["max"] = tl["max"]
-        if "enabled" in tl:
-            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
 
     save_email_config(config)
     return jsonify({"message": "Email alert configuration updated successfully"}), 200
@@ -452,6 +546,65 @@ def test_email_alert():
     else:
         return jsonify({"error": error}), 500
 
+@email_alerts_bp.route("/email-alerts/api-options", methods=["GET"])
+def get_api_options():
+    options = [
+        {
+            "id": "gmail_oauth",
+            "name": "Gmail (OAuth - Recommended)",
+            "description": "Sign in with Google - no password needed. Most secure.",
+            "is_oauth": True,
+            "available": GOOGLE_API_AVAILABLE,
+            "authenticated": os.path.exists(TOKEN_PATH),
+        },
+        {
+            "id": "gmail_smtp",
+            "name": "Gmail (App Password)",
+            "description": "Use Gmail SMTP with App Password (smtp.gmail.com:587)",
+            "is_oauth": False,
+            "smtp_host": "smtp.gmail.com",
+            "smtp_port": 587,
+            "requires_app_password": True,
+        },
+        {
+            "id": "outlook",
+            "name": "Outlook / Office 365",
+            "description": "Use Outlook SMTP (smtp-mail.outlook.com:587)",
+            "is_oauth": False,
+            "smtp_host": "smtp-mail.outlook.com",
+            "smtp_port": 587,
+            "requires_app_password": True,
+        },
+        {
+            "id": "yahoo",
+            "name": "Yahoo Mail",
+            "description": "Use Yahoo SMTP (smtp.mail.yahoo.com:587)",
+            "is_oauth": False,
+            "smtp_host": "smtp.mail.yahoo.com",
+            "smtp_port": 587,
+            "requires_app_password": True,
+        },
+        {
+            "id": "sendgrid",
+            "name": "SendGrid",
+            "description": "Use SendGrid SMTP (smtp.sendgrid.net:587)",
+            "is_oauth": False,
+            "smtp_host": "smtp.sendgrid.net",
+            "smtp_port": 587,
+            "requires_app_password": False,
+        },
+        {
+            "id": "custom_smtp",
+            "name": "Custom SMTP",
+            "description": "Use your own SMTP server",
+            "is_oauth": False,
+            "smtp_host": "",
+            "smtp_port": 587,
+            "requires_app_password": False,
+        },
+    ]
+    return jsonify(options), 200
+
 @email_alerts_bp.route("/email-alerts/auth-url", methods=["GET"])
 def get_auth_url():
     """Get Google OAuth URL for the user to sign in."""
@@ -467,14 +620,14 @@ def get_auth_url():
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": "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",
-            "redirect_uris": ["http://localhost:5000/email-alerts/oauth-callback"]
+            "redirect_uris": [OAUTH_REDIRECT_URI]
         }
     }
 
     try:
         flow = InstalledAppFlow.from_client_config(
             client_config, SCOPES,
-            redirect_uri="http://localhost:5000/email-alerts/oauth-callback"
+            redirect_uri=OAUTH_REDIRECT_URI
         )
         auth_url, _ = flow.authorization_url(
             access_type="offline",
@@ -498,11 +651,51 @@ def oauth_callback():
         return jsonify({"error": "Google API libraries not installed"}), 500
 
     authorization_response = request.url
+    # When behind ngrok, request.url uses http://localhost:5000 but
+    # Google's OAuth requires HTTPS matching the registered redirect URI.
+    # Replace the local base with the OAUTH_REDIRECT_URI base.
     try:
-        if _pending_flow is None:
-            return jsonify({"error": "No pending OAuth flow. Start authentication first."}), 400
+        from urllib.parse import urlparse
+        parsed_local = urlparse(authorization_response)
+        parsed_https = urlparse(OAUTH_REDIRECT_URI)
+        if parsed_local.netloc == "localhost:5000" and parsed_https.scheme == "https":
+            authorization_response = authorization_response.replace(
+                f"http://localhost:5000",
+                f"{parsed_https.scheme}://{parsed_https.netloc}",
+                1
+            )
+    except Exception:
+        pass
 
+    try:
         flow = _pending_flow
+        if flow is None:
+            # Pending flow was lost (e.g. server restart, multiple tabs).
+            # Reconstruct from known client config and the state in the URL.
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(authorization_response)
+            params = parse_qs(parsed.query)
+            state_val = params.get("state", [None])[0]
+
+            client_config = {
+                "web": {
+                    "client_id": "676970971720-mdce53i1i4agalvvrn72psnmnvvroer0.apps.googleusercontent.com",
+                    "project_id": "thickness-monitor-alerts",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_secret": "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",
+                    "redirect_uris": [OAUTH_REDIRECT_URI]
+                }
+            }
+            flow = InstalledAppFlow.from_client_config(
+                client_config, SCOPES,
+                redirect_uri=OAUTH_REDIRECT_URI
+            )
+            # Restore the state from the callback URL so fetch_token can validate it
+            if state_val:
+                flow.oauth2session.state = state_val
+
         flow.fetch_token(authorization_response=authorization_response)
         creds = flow.credentials
 
@@ -517,13 +710,43 @@ def oauth_callback():
         config["api_type"] = "gmail_oauth"
         save_email_config(config)
 
-        return jsonify({
-            "message": "Google authentication successful! You can now send emails.",
-            "authenticated": True
-        }), 200
+        # Return HTML so the popup window shows a friendly message (not raw JSON)
+        html_response = f"""\
+<html><head><meta charset="utf-8"><title>Authentication Successful</title>
+<style>
+body {{ font-family: Arial, sans-serif; display: flex; justify-content: center;
+       align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }}
+.card {{ background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        text-align: center; max-width: 420px; }}
+h2 {{ color: #2e7d32; margin-top: 0; }} .check {{ font-size: 64px; color: #2e7d32; }}
+p {{ color: #555; line-height: 1.5; }}
+</style></head><body>
+<div class="card">
+<div class="check">&#10003;</div>
+<h2>Authentication Successful!</h2>
+<p>Your Google account is now connected.<br>
+You can close this window and return to the application.</p>
+</div></body></html>"""
+        return html_response, 200, {"Content-Type": "text/html"}
     except Exception as e:
         _pending_flow = None
-        return jsonify({"error": f"OAuth callback failed: {str(e)}"}), 500
+        html_error = f"""\
+<html><head><meta charset="utf-8"><title>Authentication Failed</title>
+<style>
+body {{ font-family: Arial, sans-serif; display: flex; justify-content: center;
+       align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }}
+.card {{ background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+        text-align: center; max-width: 420px; }}
+h2 {{ color: #c62828; margin-top: 0; }} .x {{ font-size: 64px; color: #c62828; }}
+p {{ color: #555; line-height: 1.5; }}
+</style></head><body>
+<div class="card">
+<div class="x">&#10007;</div>
+<h2>Authentication Failed</h2>
+<p style="color:#c62828;">{str(e)}</p>
+<p>Please close this window and try signing in again from the application.</p>
+</div></body></html>"""
+        return html_error, 200, {"Content-Type": "text/html"}
 
 @email_alerts_bp.route("/email-alerts/trigger/<alert_type>", methods=["POST"])
 def trigger_alert_api(alert_type):
@@ -535,84 +758,6 @@ def trigger_alert_api(alert_type):
         return jsonify({"message": result["reason"]}), 200
     else:
         return jsonify({"message": result["reason"], "queued": "queued" in result.get("reason", "")}), 200
-
-
-# ── Threshold Limits API ──────────────────────────────────────────────
-@email_alerts_bp.route("/email-alerts/threshold-limits", methods=["GET", "POST"])
-def threshold_limits_api():
-    """Get or set threshold limits for email alerts."""
-    config = get_email_config()
-    
-    if request.method == "GET":
-        return jsonify(config.get("threshold_limits", {
-            "min": None,
-            "max": None,
-            "enabled": False,
-        })), 200
-    
-    data = request.json or {}
-    if "threshold_limits" in data:
-        tl = data["threshold_limits"]
-        if "min" in tl:
-            config["threshold_limits"]["min"] = tl["min"]
-        if "max" in tl:
-            config["threshold_limits"]["max"] = tl["max"]
-        if "enabled" in tl:
-            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
-        save_email_config(config)
-    
-    return jsonify({
-        "message": "Threshold limits updated",
-        "threshold_limits": config["threshold_limits"],
-    }), 200
-
-
-# ── Check thresholds (called from streaming loop) ─────────────────────
-def check_thresholds_and_alert(thickness_value, sensor_id="N/A"):
-    """
-    Called from the streaming loop when a new thickness reading arrives.
-    Checks if the value exceeds configured limits and triggers alerts.
-    """
-    if thickness_value is None:
-        return
-    
-    config = get_email_config()
-    if not config.get("enabled", False):
-        return
-    
-    tl = config.get("threshold_limits", {})
-    if not tl.get("enabled", False):
-        return
-    
-    min_limit = tl.get("min")
-    max_limit = tl.get("max")
-    try:
-        thickness = float(thickness_value)
-    except (TypeError, ValueError):
-        return
-    
-    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    if min_limit is not None and thickness < float(min_limit):
-        trigger_alert(
-            "threshold_below_min",
-            f"ALERT: Thickness Below Minimum Limit",
-            f"Sensor: {sensor_id}<br>"
-            f"Current thickness: <strong>{thickness:.3f} mm</strong><br>"
-            f"Minimum limit: <strong>{float(min_limit):.3f} mm</strong><br>"
-            f"Time: {now_str}"
-        )
-    
-    if max_limit is not None and thickness > float(max_limit):
-        trigger_alert(
-            "threshold_above_max",
-            f"ALERT: Thickness Above Maximum Limit",
-            f"Sensor: {sensor_id}<br>"
-            f"Current thickness: <strong>{thickness:.3f} mm</strong><br>"
-            f"Maximum limit: <strong>{float(max_limit):.3f} mm</strong><br>"
-            f"Time: {now_str}"
-        )
-
 
 # ── Load config on import ──────────────────────────────────────────────
 load_email_config()

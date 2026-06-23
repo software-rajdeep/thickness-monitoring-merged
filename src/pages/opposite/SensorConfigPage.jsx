@@ -38,8 +38,6 @@ export default function SensorConfigPage({ user, onToast }) {
   const [saving,     setSaving]     = useState(false);
   const [busyStream, setBusyStream] = useState(false);
   const [busyTrim,   setBusyTrim]   = useState(false);
-  const [rawFields,  setRawFields]  = useState({ sensor: "A", addr_h: "", addr_l: "", val_h: "", val_l: "" });
-  const [rawLoading, setRawLoading] = useState(false);
   const [log,        setLog]        = useState([{ type: "sys", msg: "System ready." }]);
 
   function addLog(msg, type = "def") {
@@ -259,33 +257,6 @@ export default function SensorConfigPage({ user, onToast }) {
     setTimeout(() => setBusyTrim(false), 2500);
   }
 
-  // ── RAW WRITE ────────────────────────────────────────────────────────────
-  async function handleExecuteWrite() {
-    const { sensor, addr_h, addr_l, val_h, val_l } = rawFields;
-    if (!addr_h || !addr_l || !val_h || !val_l) {
-      onToast("Please fill all four fields", "error"); return;
-    }
-    setRawLoading(true);
-    try {
-      const res  = await fetch(`${SERVER}/config/write`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ sensor, addr_h, addr_l, val_h, val_l }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        addLog(`[RAW] ✓ Write OK — ${data.message}`, "ok");
-        onToast("Write executed successfully", "success");
-      } else {
-        addLog(`[RAW] ✗ Write Failed — ${data.error}`, "err");
-        onToast(`Write failed: ${data.error}`, "error");
-      }
-    } catch {
-      onToast("Network error", "error");
-    }
-    setRawLoading(false);
-  }
-
   function logColor(type) {
     if (type === "ok")  return "var(--green)";
     if (type === "err") return "var(--red)";
@@ -405,7 +376,7 @@ export default function SensorConfigPage({ user, onToast }) {
           </div>
         </div>
 
-        {/* GLOBAL STREAM + RAW WRITE */}
+        {/* GLOBAL STREAM SETTINGS */}
         <div className="card">
           <div className="card-header">
             <div className="card-title"><Ic.Activity /> Global Stream Settings</div>
@@ -434,43 +405,6 @@ export default function SensorConfigPage({ user, onToast }) {
                 disabled={busyStream}
               >
                 {busyStream ? <><Spinner /> Applying…</> : "Apply Rate"}
-              </button>
-            </div>
-
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-              <div className="section-title" style={{ marginBottom: 10 }}>Raw / Write Command</div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 4, fontFamily: "var(--mono)" }}>sensor</div>
-                <select
-                  className="form-select"
-                  value={rawFields.sensor}
-                  onChange={e => setRawFields(f => ({ ...f, sensor: e.target.value }))}
-                  style={{ maxWidth: 120 }}
-                >
-                  {["A","B"].map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                {["addr_h","addr_l","val_h","val_l"].map(f => (
-                  <div key={f}>
-                    <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 4, fontFamily: "var(--mono)" }}>{f}</div>
-                    <input
-                      className="form-input"
-                      placeholder="0x00"
-                      value={rawFields[f]}
-                      onChange={e => setRawFields(p => ({ ...p, [f]: e.target.value }))}
-                      style={{ fontFamily: "var(--mono)" }}
-                    />
-                  </div>
-                ))}
-              </div>
-              <button
-                className="btn btn-outline btn-sm"
-                style={{ fontFamily: "var(--mono)" }}
-                onClick={handleExecuteWrite}
-                disabled={rawLoading}
-              >
-                {rawLoading ? <><Spinner /> Executing…</> : <><Ic.Code /> Execute Write</>}
               </button>
             </div>
 
