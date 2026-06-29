@@ -66,6 +66,11 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "frequency": "daily",
     },
+    "threshold_limits": {
+        "min": None,
+        "max": None,
+        "enabled": False,
+    },
 }
 
 # ── In-memory state ────────────────────────────────────────────────────
@@ -524,6 +529,15 @@ def update_email_alert_config():
         if "frequency" in data["summary_report"]:
             config["summary_report"]["frequency"] = str(data["summary_report"]["frequency"])
 
+    if "threshold_limits" in data:
+        tl = data["threshold_limits"]
+        if "min" in tl:
+            config["threshold_limits"]["min"] = tl["min"]
+        if "max" in tl:
+            config["threshold_limits"]["max"] = tl["max"]
+        if "enabled" in tl:
+            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
+
     save_email_config(config)
     return jsonify({"message": "Email alert configuration updated successfully"}), 200
 
@@ -747,6 +761,36 @@ p {{ color: #555; line-height: 1.5; }}
 <p>Please close this window and try signing in again from the application.</p>
 </div></body></html>"""
         return html_error, 200, {"Content-Type": "text/html"}
+
+# ── Threshold Limits API ─────────────────────────────────
+@email_alerts_bp.route("/email-alerts/threshold-limits", methods=["GET", "POST"])
+def threshold_limits_api():
+    """Get or set threshold limits for email alerts."""
+    config = get_email_config()
+
+    if request.method == "GET":
+        return jsonify(config.get("threshold_limits", {
+            "min": None,
+            "max": None,
+            "enabled": False,
+        })), 200
+
+    data = request.json or {}
+    if "threshold_limits" in data:
+        tl = data["threshold_limits"]
+        if "min" in tl:
+            config["threshold_limits"]["min"] = tl["min"]
+        if "max" in tl:
+            config["threshold_limits"]["max"] = tl["max"]
+        if "enabled" in tl:
+            config["threshold_limits"]["enabled"] = bool(tl["enabled"])
+        save_email_config(config)
+
+    return jsonify({
+        "message": "Threshold limits updated",
+        "threshold_limits": config["threshold_limits"],
+    }), 200
+
 
 @email_alerts_bp.route("/email-alerts/trigger/<alert_type>", methods=["POST"])
 def trigger_alert_api(alert_type):
