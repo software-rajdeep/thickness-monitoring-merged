@@ -12,6 +12,7 @@ import json
 import os
 import csv
 import io
+from collections import deque
 from psycopg2 import extras
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, send_from_directory
@@ -48,6 +49,11 @@ LIMIT_FILTERED = 10_000_000
 LIMIT_UNFILTERED = 1_000_000
 LIMIT_THICKNESS = 10_000_000
 LIMIT_THICKNESS_RAW = 1_000_000
+
+# Moving-average window for the "filtered" tables. At 5 Hz, 10 samples ≈ 2 s of
+# smoothing. The unfiltered/raw tables always store the instantaneous value;
+# the filtered tables store the rolling average of the last FILTER_WINDOW samples.
+FILTER_WINDOW = 10
 
 # --- FILE CONFIG ---
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "sensor_config.json")
@@ -161,16 +167,10 @@ def rebuild_active_sensors():
             print(f"  [Config] Sensor {sid_upper} @ {cfg['ip']}:{cfg['port']}")
 
 def refresh_sensor_configs(new_config=None):
-    """Update SENSOR_CONFIGS from file or provided dict; rebuild active sensors.
-    
-    When new_config is provided (from POST /config/network), it fully replaces
-    the in-memory config AND the file — so sensors removed from the HTML form
-    are actually removed from the active sensor connections.
-    When new_config is None, loads from file (used during startup).
-    """
+    """Update SENSOR_CONFIGS from file or provided dict; rebuild active sensors."""
     global SENSOR_CONFIGS
     if new_config:
-        SENSOR_CONFIGS = dict(new_config)
+        SENSOR_CONFIGS.update(new_config)
         save_network_config(SENSOR_CONFIGS)
     else:
         SENSOR_CONFIGS = load_network_config()
@@ -655,44 +655,6 @@ def get_server_config():
         "db_host": DB_HOST,
         "db_name": DB_NAME,
     }), 200
-
-# Simple CORS support for standalone HTML pages (like sensor_setup.html)
-# that make cross-origin requests from file:// or different origins.
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Accept'
-    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
-    return response
-
-# ==========================================
-# APIS - NETWORK CONFIG (sensor_network.json)
-# ==========================================
-@app.route('/config/network', methods=['GET', 'POST'])
-def handle_network_config():
-    """GET: return the current sensor_network.json config.
-       POST: overwrite sensor_network.json and rebuild active sensor connections."""
-    if request.method == 'GET':
-        try:
-            config = load_network_config()
-            return jsonify(config), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    elif request.method == 'POST':
-        try:
-            new_config = request.json
-            if not new_config:
-                return jsonify({"error": "No JSON payload provided"}), 400
-            save_network_config(new_config)
-            # Reload SENSOR_CONFIGS and rebuild active sensor connections
-            refresh_sensor_configs(new_config)
-            active = list(active_sensors_map.keys())
-            return jsonify({
-                "message": "Network configuration saved and active sensors rebuilt.",
-                "active_sensors": active
-            }), 200
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
 
 # ==========================================
 # APIS - CONFIG FILE SYNC
@@ -1182,27 +1144,57 @@ def _db_connect():
         print(f"[Stream DB] connect failed: {e}")
         return None, None
 
-def _db_write(conn, cur, now, reading, thickness_val):
-    """INSERT one reading into all four sensor tables, then commit."""
-    a = reading.get("A")
-    b = reading.get("B")
-    c = reading.get("C")
+def _compute_thickness(a, b, state):
+    """Opposite-mode thickness from sensors a & b, using the same rules as the
+    stream loop: gap-based when a gap is calibrated, else the calibration-baseline
+    fallback. Returns None when thickness can't be computed."""
+    if a is None or b is None:
+        return None
+    gap = state.get("gap_distance", 0.0)
+    if gap > 0:
+        return calculate_opposite_thickness(a, b)
+    cal_baselines = state.get("calibration_baseline_readings", {})
+    bA = cal_baselines.get("A")
+    bB = cal_baselines.get("B")
+    if state.get("calibration_active") and bA is not None and bB is not None:
+        try:
+            ref = float(state.get("calibration_reference_thickness", 0.0) or 0.0)
+            delta_A = float(bA) - float(a)
+            delta_B = float(bB) - float(b)
+            return round(ref + delta_A + delta_B, 3)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness):
+    """INSERT one reading into all four sensor tables, then commit.
+
+    raw  -> unfiltered/raw tables (instantaneous values)
+    filt -> filtered tables (moving-average values)
+    """
+    ra, rb, rc = raw.get("A"), raw.get("B"), raw.get("C")
+    fa, fb, fc = filt.get("A"), filt.get("B"), filt.get("C")
+    # Filtered (moving-average) SBS table
     cur.execute(
         f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
-        (now, a, b, c)
+        (now, fa, fb, fc)
     )
+    # Unfiltered (raw) SBS table
     cur.execute(
         f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
-        (now, a, b, c)
+        (now, ra, rb, rc)
     )
-    if a is not None and b is not None:
+    if ra is not None and rb is not None:
+        # Filtered opposite-thickness table (moving-average sensors + thickness)
         cur.execute(
             f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
-            (now, a, b, thickness_val)
+            (now, fa, fb, filt_thickness)
         )
+        # Raw opposite-thickness table (instantaneous sensors + thickness)
         cur.execute(
             f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
-            (now, a, b, thickness_val)
+            (now, ra, rb, raw_thickness)
         )
     conn.commit()
 
@@ -1237,6 +1229,8 @@ def stream_ingest_loop():
     consecutive_empty_readings = 0
     db_conn, db_cur = _db_connect()
     inserts_since_trim = 0
+    # Rolling buffers for the moving-average filter (one per sensor)
+    filter_windows = {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")}
 
     while True:
         if not stream_state["active"]:
@@ -1267,37 +1261,38 @@ def stream_ingest_loop():
 
         if reading:
             now = datetime.datetime.now()
-            thickness_val = None
             state = get_thickness_state()
-            gap = state.get("gap_distance", 0.0)
-            if "A" in reading and "B" in reading:
-                if gap > 0:
-                    thickness_val = calculate_opposite_thickness(reading["A"], reading["B"])
-                else:
-                    # Gap not set — compute relative thickness from calibration baselines
-                    cal_baselines = state.get("calibration_baseline_readings", {})
-                    bA = cal_baselines.get("A")
-                    bB = cal_baselines.get("B")
-                    if state.get("calibration_active") and bA is not None and bB is not None:
-                        try:
-                            ref = float(state.get("calibration_reference_thickness", 0.0) or 0.0)
-                            delta_A = float(bA) - float(reading["A"])
-                            delta_B = float(bB) - float(reading["B"])
-                            thickness_val = round(ref + delta_A + delta_B, 3)
-                        except (TypeError, ValueError):
-                            pass
-                # Check email alert thresholds for this thickness reading
-                if thickness_val is not None:
-                    try:
-                        check_thresholds_and_alert(thickness_val, sensor_id="Opposite Sensors")
-                    except Exception:
-                        pass  # Don't let alert errors disrupt the stream
+
+            # Moving-average (filtered) values: push each raw reading into its
+            # rolling window and take the mean. Sensors absent from this reading
+            # keep their previous window untouched and report None.
+            filtered = {}
+            for sid in ("A", "B", "C"):
+                rv = reading.get(sid)
+                if rv is None:
+                    filtered[sid] = None
+                    continue
+                win = filter_windows[sid]
+                win.append(float(rv))
+                filtered[sid] = round(sum(win) / len(win), 3)
+
+            # Raw and filtered thickness (opposite mode)
+            raw_thickness = _compute_thickness(reading.get("A"), reading.get("B"), state)
+            filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), state)
+
+            # Check email alert thresholds on the raw thickness reading
+            if raw_thickness is not None:
+                try:
+                    check_thresholds_and_alert(raw_thickness, sensor_id="Opposite Sensors")
+                except Exception:
+                    pass  # Don't let alert errors disrupt the stream
+
             payload = {
                 "timestamp": now.isoformat(),
                 "distance_A": reading.get("A"),
                 "distance_B": reading.get("B"),
                 "distance_C": reading.get("C"),
-                "thickness": thickness_val,
+                "thickness": raw_thickness,
             }
             socketio.emit("sensor_reading", payload)
 
@@ -1306,7 +1301,7 @@ def stream_ingest_loop():
                 db_conn, db_cur = _db_connect()
             if db_conn is not None:
                 try:
-                    _db_write(db_conn, db_cur, now, reading, thickness_val)
+                    _db_write(db_conn, db_cur, now, reading, filtered, raw_thickness, filt_thickness)
                     inserts_since_trim += 1
                     if inserts_since_trim >= 10000:
                         _db_trim(db_cur, db_conn)
