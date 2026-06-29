@@ -89,7 +89,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
             cur.execute(f"""
-                SELECT id, timestamp, sensor_A_distance, sensor_B_distance, thickness
+                SELECT id, timestamp, sensor_a, sensor_b, thickness
                 FROM {DB_TABLE_THICKNESS}
                 ORDER BY timestamp ASC
             """)
@@ -98,7 +98,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_A_distance", "sensor_B_distance", "thickness"])
+            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -117,7 +117,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
             cur.execute(f"""
-                SELECT id, timestamp, sensor_A_distance, sensor_B_distance, computed_thickness
+                SELECT id, timestamp, sensor_a, sensor_b, thickness
                 FROM {DB_TABLE_THICKNESS_RAW}
                 ORDER BY timestamp ASC
             """)
@@ -126,7 +126,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_A_distance", "sensor_B_distance", "computed_thickness"])
+            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
             writer.writerows(rows)
             output.seek(0)
             return Response(

@@ -121,6 +121,35 @@ print(f"  nginx test: {out.strip()} {err.strip()}")
 run(kvm, "systemctl reload nginx")
 print("  nginx reloaded")
 
+# Install nginx watchdog (auto-repairs port 8082 every 5 min if it goes missing)
+print("\n[KVM] Installing nginx watchdog...")
+NGINX_WATCHDOG_SCRIPT = (
+    '#!/bin/bash\n'
+    '# Watchdog: ensure nginx merged site (port 8082) is always active.\n'
+    'if ! ss -tlnp | grep -q \':8082 \'; then\n'
+    '    ln -sf /etc/nginx/sites-available/merged /etc/nginx/sites-enabled/merged\n'
+    '    nginx -t && systemctl reload nginx\n'
+    '    logger "nginx-watchdog: port 8082 was down -- re-enabled merged site and reloaded nginx"\n'
+    'fi\n'
+)
+NGINX_WATCHDOG_SERVICE = (
+    '[Unit]\nDescription=Nginx port 8082 watchdog\n\n'
+    '[Service]\nType=oneshot\nExecStart=/usr/local/bin/nginx-watchdog.sh\n'
+)
+NGINX_WATCHDOG_TIMER = (
+    '[Unit]\nDescription=Run nginx port 8082 watchdog every 5 minutes\n\n'
+    '[Timer]\nOnBootSec=60\nOnUnitActiveSec=5min\nUnit=nginx-watchdog.service\n\n'
+    '[Install]\nWantedBy=timers.target\n'
+)
+sftp = kvm.open_sftp()
+upload_text(sftp, NGINX_WATCHDOG_SCRIPT, '/usr/local/bin/nginx-watchdog.sh')
+upload_text(sftp, NGINX_WATCHDOG_SERVICE, '/etc/systemd/system/nginx-watchdog.service')
+upload_text(sftp, NGINX_WATCHDOG_TIMER,   '/etc/systemd/system/nginx-watchdog.timer')
+sftp.close()
+run(kvm, 'chmod +x /usr/local/bin/nginx-watchdog.sh')
+run(kvm, 'systemctl daemon-reload && systemctl enable --now nginx-watchdog.timer')
+print("  nginx watchdog timer enabled (runs every 5 min)")
+
 # Verify
 out, _ = run(kvm, "ss -tlnp | grep -E '5002|8082|:443|:80'")
 print(f"\n[KVM] Listening ports:\n{out}")
@@ -175,6 +204,26 @@ print(f"  pi-merged-client status: {out.strip()}")
 
 out, _ = run(ubuntu, "sudo systemctl status pi-merged-client --no-pager -n 10 2>&1")
 print(f"\n[Ubuntu] Service status:\n{out}")
+
+# Install pi-client watchdog cron (restarts service if no HTTP 200 in last 2 min)
+print("\n[Ubuntu] Installing pi-client watchdog cron...")
+PI_WATCHDOG = (
+    '#!/bin/bash\n'
+    '# Watchdog: restart pi-merged-client if running but not posting successfully.\n'
+    'if systemctl is-active --quiet pi-merged-client; then\n'
+    '    if ! journalctl -u pi-merged-client --since "2 minutes ago" --no-pager -q | grep -q "HTTP 200"; then\n'
+    '        systemctl restart pi-merged-client\n'
+    '        logger "pi-client-watchdog: no successful POST in 2 min -- restarted pi-merged-client"\n'
+    '    fi\n'
+    'fi\n'
+)
+sftp2 = ubuntu.open_sftp()
+upload_text(sftp2, PI_WATCHDOG, '/tmp/pi_watchdog.sh')
+sftp2.close()
+run(ubuntu, 'sudo cp /tmp/pi_watchdog.sh /usr/local/bin/pi-client-watchdog.sh')
+run(ubuntu, 'sudo chmod +x /usr/local/bin/pi-client-watchdog.sh')
+run(ubuntu, 'sudo bash -c "(crontab -l 2>/dev/null | grep -v pi-client-watchdog; echo \'*/5 * * * * /usr/local/bin/pi-client-watchdog.sh\') | crontab -"')
+print("  pi-client watchdog cron enabled (runs every 5 min)")
 
 ubuntu.close()
 
