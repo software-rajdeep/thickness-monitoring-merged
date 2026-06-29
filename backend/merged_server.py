@@ -657,6 +657,34 @@ def get_server_config():
     }), 200
 
 # ==========================================
+# APIS - NETWORK CONFIG (used by sensor_setup.html)
+# ==========================================
+@app.route('/config/network', methods=['GET', 'POST'])
+def handle_network_config():
+    """GET: return current sensor_network.json config.
+       POST: save new network config and activate sensors."""
+    if request.method == 'GET':
+        config = load_network_config()
+        if not config:
+            return jsonify({}), 200
+        return jsonify(config), 200
+
+    elif request.method == 'POST':
+        try:
+            payload = request.get_json()
+            if not payload:
+                return jsonify({"error": "No JSON payload provided"}), 400
+            save_network_config(payload)
+            refresh_sensor_configs(payload)
+            active = list(active_sensors_map.keys())
+            return jsonify({
+                "message": "Network config saved successfully.",
+                "active_sensors": active
+            }), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+# ==========================================
 # APIS - CONFIG FILE SYNC
 # ==========================================
 @app.route('/config/file', methods=['GET', 'POST'])
