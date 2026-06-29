@@ -73,6 +73,14 @@ DEFAULT_CONFIG = {
     },
 }
 
+# ── Summary-only mode ──────────────────────────────────────────────────
+# When True, ONLY the daily/weekly Summary Report email is sent. Every
+# event-driven alert (threshold, sensor-disconnect, run-session, grouped
+# alerts) is suppressed at trigger_alert() regardless of the UI toggles or
+# saved config. The Test Email button still works (it calls send_email
+# directly). Set to False to restore per-alert emails.
+SUMMARY_ONLY_MODE = True
+
 # ── In-memory state ────────────────────────────────────────────────────
 _email_config = None
 _last_alert_times = {}
@@ -280,6 +288,10 @@ def send_email(subject, body_content):
 
 # ── Alert Triggering API ──────────────────────────────────────────────
 def trigger_alert(alert_type, title, details):
+    # Summary-only mode: suppress all event-driven alert emails. Only the
+    # Summary Report (sent via send_email directly) goes out. See SUMMARY_ONLY_MODE.
+    if SUMMARY_ONLY_MODE:
+        return {"success": False, "reason": "Summary-only mode: alert emails disabled"}
     config = get_email_config()
     if not config.get("enabled", False):
         return {"success": False, "reason": "Email alerts disabled"}
