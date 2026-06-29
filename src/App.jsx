@@ -43,8 +43,13 @@ export default function App() {
   const [calibrationBusy, setCalibrationBusy] = useState(false);
   const [runModeVisitKey, setRunModeVisitKey] = useState(0);
 
-  // Thickness limit state persists across page navigations
+  // Thickness limit state persists across page navigations.
+  // It is also GLOBAL: stored on the server so it is shared across all users
+  // and sessions — set it once and every later login sees the same limit.
   const [thicknessLimit, setThicknessLimit] = useState({ active: false, min: "", max: "" });
+  // Mirror of thicknessLimit kept in a ref so updateThicknessLimit() can resolve
+  // functional updaters and persist the result without a stale closure.
+  const thicknessLimitRef = useRef(thicknessLimit);
 
   const socketRef       = useRef(null);
   const counterRef      = useRef(1);
@@ -90,6 +95,42 @@ export default function App() {
     } catch {
       return null;
     }
+  }
+
+  // Load the GLOBAL thickness limit from the server (shared across all users).
+  async function loadThicknessLimit() {
+    try {
+      const response = await fetch(`${SERVER}/thickness/limit`);
+      if (!response.ok) return;
+      const data = await response.json();
+      const next = {
+        active: !!data.active,
+        min: data.min ?? "",
+        max: data.max ?? "",
+      };
+      thicknessLimitRef.current = next;
+      setThicknessLimit(next);
+    } catch {
+      // Keep the UI usable even if the limit endpoint is unavailable.
+    }
+  }
+
+  // Update the thickness limit locally AND persist it to the server so it
+  // stays global. Accepts either a new value or a functional updater, matching
+  // the React setState signature the page components already use.
+  function updateThicknessLimit(updater) {
+    const next = typeof updater === "function"
+      ? updater(thicknessLimitRef.current)
+      : updater;
+    thicknessLimitRef.current = next;
+    setThicknessLimit(next);
+    // Fire-and-forget: the local state is the source of truth for the UI; the
+    // server copy just makes it survive logout / login-as-another-user.
+    fetch(`${SERVER}/thickness/limit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    }).catch(() => {});
   }
 
   // ── Side-by-side mode handlers ─────────────────────────────────────────
@@ -309,8 +350,9 @@ export default function App() {
   async function handleLogin(u) {
     setUser(u);
     setPage("dashboard");
-    // Calibration state is now global (shared across all users)
+    // Calibration state and thickness limit are now global (shared across all users)
     await loadThicknessState();
+    await loadThicknessLimit();
   }
 
   async function handleLogout() {
@@ -341,7 +383,14 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadThicknessState();
+    loadThicknessLimit();
   }, [user]);
+
+  // Keep the ref in sync with state for any external setThicknessLimit callers
+  // (e.g. the logout reset) so updateThicknessLimit never resolves a stale value.
+  useEffect(() => {
+    thicknessLimitRef.current = thicknessLimit;
+  }, [thicknessLimit]);
 
   useEffect(() => {
     if (page === "run-mode") {
@@ -413,7 +462,7 @@ export default function App() {
                 calibrationBusy={calibrationBusy}
                 runModeVisitKey={runModeVisitKey}
                 thicknessLimit={thicknessLimit}
-                setThicknessLimit={setThicknessLimit}
+                setThicknessLimit={updateThicknessLimit}
               />
             ) : (
               <SbsRunModePage
@@ -428,7 +477,7 @@ export default function App() {
                 calibrationBusy={calibrationBusy}
                 runModeVisitKey={runModeVisitKey}
                 thicknessLimit={thicknessLimit}
-                setThicknessLimit={setThicknessLimit}
+                setThicknessLimit={updateThicknessLimit}
               />
             )
           )}
