@@ -83,7 +83,6 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
 
     @app.route('/download/thickness', methods=['GET'])
     def download_thickness():
-        """Download filtered/aggregated opposite-side thickness data."""
         if DB_TABLE_THICKNESS is None:
             return jsonify({"error": "Thickness table not configured"}), 400
         try:
@@ -112,7 +111,6 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
 
     @app.route('/download/thickness/raw', methods=['GET'])
     def download_thickness_raw():
-        """Download raw opposite-side thickness data (unfiltered)."""
         if DB_TABLE_THICKNESS_RAW is None:
             return jsonify({"error": "Thickness raw table not configured"}), 400
         try:
@@ -148,7 +146,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             filtered_count = cur.fetchone()[0]
             cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_UNFILTERED}")
             unfiltered_count = cur.fetchone()[0]
-            
+
             # Opposite-side table counts (if table names provided)
             thickness_count = None
             thickness_raw_count = None
@@ -164,7 +162,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
                     thickness_raw_count = cur.fetchone()[0]
                 except:
                     thickness_raw_count = 0
-            
+
             cur.execute("SELECT COUNT(*) FROM users")
             users_count = cur.fetchone()[0]
             cur.close()
@@ -178,4 +176,3 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             }), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-
