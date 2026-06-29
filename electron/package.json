@@ -1,0 +1,46 @@
+{
+  "name": "thickness-monitor-electron",
+  "version": "1.0.0",
+  "description": "Desktop shell for Merged Thickness Monitor — displays Vercel frontend on Raspberry Pi",
+  "main": "main.js",
+  "author": "Rajdeep Analytics",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron .",
+    "build:rpi32": "npx electron-builder --linux --armv7l",
+    "build:rpi64": "npx electron-builder --linux --arm64",
+    "setup": "bash install.sh --autostart"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.rajdeep.thickness-monitor",
+    "productName": "Thickness Monitor",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "offline.html"
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["armv7l", "arm64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["armhf", "arm64"]
+        }
+      ],
+      "category": "Utility",
+      "icon": null
+    }
+  }
+}
