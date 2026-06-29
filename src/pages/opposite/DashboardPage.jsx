@@ -3,7 +3,7 @@ import { Ic } from "../../icons/Icons";
 import { ROLE_ACCESS } from "../../constants/roles";
 import { SENSOR_CONFIGS } from "../../constants/config_opposite";
 
-export default function DashboardPage({ user, onNavigate, rows, streamRate }) {
+export default function DashboardPage({ user, onNavigate, rows, streamRate, sensorsOnline }) {
   const access = ROLE_ACCESS[user.role] || [];
 
   const [sensorStatus, setSensorStatus] = useState(() => {
@@ -13,6 +13,13 @@ export default function DashboardPage({ user, onNavigate, rows, streamRate }) {
   });
 
   useEffect(() => {
+    // Sensors offline → force all status off (ignore the last stale row).
+    if (sensorsOnline === false) {
+      const s = {};
+      Object.keys(SENSOR_CONFIGS).forEach(sid => s[sid] = false);
+      setSensorStatus(s);
+      return;
+    }
     if (!rows || rows.length === 0) return;
     const latest = rows[0];
     const newStatus = {};
@@ -21,7 +28,7 @@ export default function DashboardPage({ user, onNavigate, rows, streamRate }) {
       newStatus[sid] = val !== null && val !== undefined;
     });
     setSensorStatus(newStatus);
-  }, [rows]);
+  }, [rows, sensorsOnline]);
 
   const onlineCount = Object.values(sensorStatus).filter(Boolean).length;
   const totalCount  = Object.keys(SENSOR_CONFIGS).length;

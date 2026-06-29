@@ -10,6 +10,7 @@ export default function RunModePage({
   rows,
   live,
   connected,
+  sensorsOnline,
   onToggle,
   thicknessState,
   onSetGapDistance,
@@ -41,7 +42,9 @@ export default function RunModePage({
   const canvasRef = useRef(null);
   const WINDOW = 100;
 
-  const latest = rows[0];
+  // When sensors are offline, ignore the last (stale) row so all live values
+  // render as "-" instead of frozen numbers.
+  const latest = sensorsOnline === false ? null : rows[0];
   const latestThickness = latest?.thickness ?? null;
   const sensorsOutOfRange = latestThickness !== null && parseFloat(latestThickness) === 0;
 
@@ -405,7 +408,8 @@ export default function RunModePage({
             <div className="page-sub">OPPOSITE SENSORS - THICKNESS MEASUREMENT</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {live && connected && <div className="live-dot"><div className="dot" /> LIVE</div>}
+            {live && connected && sensorsOnline && <div className="live-dot"><div className="dot" /> LIVE</div>}
+            {live && connected && !sensorsOnline && <div className="live-dot" style={{ color: "#c62828" }}><div className="dot" style={{ background: "#c62828" }} /> SENSORS OFFLINE</div>}
           </div>
         </div>
       </div>

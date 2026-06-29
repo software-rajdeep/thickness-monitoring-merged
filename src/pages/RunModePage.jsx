@@ -9,6 +9,7 @@ export default function RunModePage({
   rows,
   live,
   connected,
+  sensorsOnline,
   onToggle,
   thicknessState,
   onApplyCalibration,
@@ -226,7 +227,9 @@ export default function RunModePage({
     });
   }, [rows, limitActive, minLimit, maxLimit, sensorOrder, thicknessState]);
 
-  const latest = rows[0];
+  // When sensors are offline, ignore the last (stale) row so live values
+  // render as "-" instead of frozen numbers.
+  const latest = sensorsOnline === false ? null : rows[0];
 
   return (
     <div className="fade-up" style={{ display: "flex", flexDirection: "column", flex: 1 }}>

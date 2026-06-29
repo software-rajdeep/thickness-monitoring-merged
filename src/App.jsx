@@ -39,6 +39,9 @@ export default function App() {
   const [connected,   setConnected]   = useState(false);
   const [rows,        setRows]        = useState([]);
   const [streamRate,  setStreamRate]  = useState(null);
+  // sensor-level connectivity (distinct from `connected`, which is the socket).
+  // false ⇒ sensors are offline / no fresh data is arriving from the sensors.
+  const [sensorsOnline, setSensorsOnline] = useState(true);
   const [thicknessState, setThicknessState] = useState(null);
   const [calibrationBusy, setCalibrationBusy] = useState(false);
   const [runModeVisitKey, setRunModeVisitKey] = useState(0);
@@ -290,6 +293,12 @@ export default function App() {
     socket.on("disconnect", () => {
       setConnected(false);
       setLive(false);
+      setSensorsOnline(true); // reset; banner is gated on `live` anyway
+    });
+
+    // Server-pushed sensor online/offline status (authoritative).
+    socket.on("sensor_status", (data) => {
+      setSensorsOnline(!!(data && data.online));
     });
 
     socket.on("sensor_reading", (data) => {
@@ -327,6 +336,8 @@ export default function App() {
         if (hz >= 1 && hz <= 20) setStreamRate(String(hz));
       }
       lastReadingTime.current = now;
+      // A reading means the sensors are live.
+      setSensorsOnline(true);
     });
 
     socketRef.current = socket;
@@ -411,6 +422,18 @@ export default function App() {
     };
   }, []);
 
+  // Sensor-offline watchdog (backup for the server's sensor_status event):
+  // while live, if no reading has arrived for >3.5 s, treat sensors as offline.
+  useEffect(() => {
+    if (!live) { setSensorsOnline(true); return; }
+    const iv = setInterval(() => {
+      if (lastReadingTime.current && Date.now() - lastReadingTime.current > 3500) {
+        setSensorsOnline(false);
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [live]);
+
   // ── Show mode selection first if no mode chosen ──
   if (!sensorMode) return <ModeSelection onSelectMode={handleSelectMode} />;
 
@@ -432,6 +455,16 @@ export default function App() {
     <div className="app-shell">
       <ActiveTopbar user={user} page={page} onLogout={handleBackToModeSelection} />
 
+      {live && !sensorsOnline && (
+        <div style={{
+          background: "#c62828", color: "#fff", padding: "10px 18px",
+          fontSize: 14, fontWeight: 600, textAlign: "center",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}>
+          ⚠ Sensors disconnected — no live data is being received from the sensors.
+        </div>
+      )}
+
       <div className="content-area">
         <ActiveSidebar user={user} page={page} onNavigate={setPage} onLogout={handleBackToModeSelection} />
 
@@ -442,6 +475,7 @@ export default function App() {
               onNavigate={setPage}
               rows={rows}
               streamRate={streamRate}
+              sensorsOnline={sensorsOnline}
             />
           )}
           {page === "sensor-config" && (
@@ -454,6 +488,7 @@ export default function App() {
                 rows={rows}
                 live={live}
                 connected={connected}
+                sensorsOnline={sensorsOnline}
                 onToggle={handleToggle}
                 thicknessState={thicknessState}
                 onSetGapDistance={handleSetGapDistance}
@@ -470,6 +505,7 @@ export default function App() {
                 rows={rows}
                 live={live}
                 connected={connected}
+                sensorsOnline={sensorsOnline}
                 onToggle={handleToggle}
                 thicknessState={thicknessState}
                 onApplyCalibration={handleApplyCalibration}

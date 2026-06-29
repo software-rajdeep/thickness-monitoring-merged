@@ -629,6 +629,15 @@ pending_config_lock = threading.Lock()
 _last_ingest_emit_time = 0.0
 _ingest_emit_lock = threading.Lock()
 
+# Sensor-freshness tracking. last_ingest_monotonic = monotonic timestamp of the
+# most recent ingest POST that carried real data. The stream loop uses it to
+# detect when the sensors (or the pi_client link) have gone offline, so it can
+# stop presenting the last received values as if they were still live.
+last_ingest_monotonic = 0.0
+SENSOR_STALE_SECONDS = 3.0
+_last_status_emit_mono = 0.0
+_last_status_online = None
+
 # ==========================================
 # APIS - SERVER CONFIG (missing endpoint that frontends expect)
 # ==========================================
@@ -989,7 +998,28 @@ def ingest_data():
     last_ingest_reading["A"] = float(a) if a is not None else None
     last_ingest_reading["B"] = float(b) if b is not None else None
     last_ingest_reading["C"] = float(c) if c is not None else None
+    # Mark data freshness so the stream loop can detect when sensors go offline.
+    if a is not None or b is not None or c is not None:
+        global last_ingest_monotonic
+        last_ingest_monotonic = time.monotonic()
     return jsonify({"message": "Data received", "timestamp": now.isoformat()}), 200
+
+
+@app.route('/sensors/status', methods=['GET'])
+def sensors_status():
+    """Report whether the sensor feed is currently live (fresh ingest data).
+
+    online = an ingest POST with real data arrived within SENSOR_STALE_SECONDS.
+    Lets the frontend show a clear "Sensors disconnected" state.
+    """
+    age = time.monotonic() - last_ingest_monotonic
+    online = (last_ingest_monotonic > 0) and (age <= SENSOR_STALE_SECONDS)
+    per = {sid: (last_ingest_reading.get(sid) is not None) for sid in ("A", "B", "C")}
+    return jsonify({
+        "online": bool(online),
+        "stale_seconds": round(age, 2) if last_ingest_monotonic > 0 else None,
+        "sensors": per,
+    }), 200
 
 # ==========================================
 # APIS - CONFIG READ/WRITE (REST for CD22 sensor configuration)
@@ -1244,6 +1274,21 @@ def _db_trim(cur, conn):
             )
     conn.commit()
 
+def _emit_sensor_status(online):
+    """Broadcast sensor online/offline status over WebSocket. Throttled to ~1 Hz,
+    but always emits immediately on a transition so the UI updates promptly."""
+    global _last_status_emit_mono, _last_status_online
+    now_mono = time.monotonic()
+    if online == _last_status_online and (now_mono - _last_status_emit_mono) < 1.0:
+        return
+    _last_status_online = online
+    _last_status_emit_mono = now_mono
+    try:
+        socketio.emit("sensor_status", {"online": bool(online)})
+    except Exception:
+        pass
+
+
 def stream_ingest_loop():
     """Background thread: emits sensor readings via WebSocket and writes them to the DB.
 
@@ -1268,6 +1313,17 @@ def stream_ingest_loop():
         # Try to get readings from ingest (pi_client HTTP POST)
         reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
 
+        # Sensor freshness / offline detection (CLOUD_MODE). If no fresh ingest
+        # within SENSOR_STALE_SECONDS, the sensors (or the pi_client link) are
+        # down. Don't keep re-emitting the last values as if they were live —
+        # clear them so the UI can show "Sensors disconnected" and the graph
+        # stops advancing on stale data.
+        if CLOUD_MODE and (time.monotonic() - last_ingest_monotonic) > SENSOR_STALE_SECONDS:
+            reading = {}
+            last_ingest_reading["A"] = None
+            last_ingest_reading["B"] = None
+            last_ingest_reading["C"] = None
+
         # If no ingest data available AND not CLOUD_MODE AND there are active local
         # sensors, poll them directly. Skip in CLOUD_MODE — cloud server can't
         # reach sensors on the 192.168.5.x LAN and TCP connections would block.
@@ -1286,6 +1342,9 @@ def stream_ingest_loop():
                     print(f"[Stream] No sensor data available ({consecutive_empty_readings} consecutive empty reads)")
         elif reading:
             consecutive_empty_readings = 0
+
+        # Tell the frontend whether sensors are live or disconnected.
+        _emit_sensor_status(bool(reading))
 
         if reading:
             now = datetime.datetime.now()
