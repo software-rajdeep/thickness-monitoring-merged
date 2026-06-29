@@ -15,12 +15,12 @@ export default function RunModePage({
   onResetCalibration,
   calibrationBusy,
   runModeVisitKey,
+  thicknessLimit,
+  setThicknessLimit,
 }) {
   if (!ROLE_ACCESS[user.role]?.includes("run-mode")) return <AccessDenied />;
 
-  const [minLimit,    setMinLimit]    = useState("");
-  const [maxLimit,    setMaxLimit]    = useState("");
-  const [limitActive, setLimitActive] = useState(false);
+  const { active: limitActive, min: minLimit, max: maxLimit } = thicknessLimit;
   const [calibrationStep, setCalibrationStep] = useState("none");
   const [calibrationValue, setCalibrationValue] = useState("");
   const [calibrationError, setCalibrationError] = useState("");
@@ -372,7 +372,7 @@ export default function RunModePage({
           <span className="section-title">Thickness Limit</span>
           <button
             className={`btn btn-sm ${limitActive ? "btn-red" : "btn-outline"}`}
-            onClick={() => setLimitActive((current) => !current)}
+            onClick={() => setThicknessLimit(prev => ({ ...prev, active: !prev.active }))}
           >
             {limitActive ? "Disable Limit" : "Enable Limit"}
           </button>
@@ -394,7 +394,7 @@ export default function RunModePage({
               className="form-input"
               placeholder="e.g. 4"
               value={minLimit}
-              onChange={(event) => setMinLimit(event.target.value)}
+              onChange={(event) => setThicknessLimit(prev => ({ ...prev, min: event.target.value }))}
               style={{ width: 100, fontFamily: "var(--mono)" }}
             />
           </div>
@@ -406,7 +406,7 @@ export default function RunModePage({
               className="form-input"
               placeholder="e.g. 8"
               value={maxLimit}
-              onChange={(event) => setMaxLimit(event.target.value)}
+              onChange={(event) => setThicknessLimit(prev => ({ ...prev, max: event.target.value }))}
               style={{ width: 100, fontFamily: "var(--mono)" }}
             />
           </div>

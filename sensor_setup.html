@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Network Setup</title>
+
+    <!-- Google Font: Inter (matches existing frontend) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        /* ══════════════════════════════════════════════════════════════════
+           DESIGN TOKENS — mirrors src/styles/global.css CSS custom properties
+           ══════════════════════════════════════════════════════════════════ */
+        :root {
+            /* Brand */
+            --brand-deep:   #182456;
+            --brand-mid:    #233A82;
+            --brand-light:  #30549C;
+            --brand-accent: #3B55A8;
+            --brand-blue:   #5C7BD6;
+
+            /* Backgrounds */
+            --bg:          #ffffff;
+            --bg2:         #f8f9fb;
+            --bg3:         #f0f2f6;
+            --bg4:         #e6e8ee;
+
+            /* Borders */
+            --border:      #dfe2e9;
+            --border2:     #c8ccd6;
+
+            /* Accent */
+            --blue:        #3B55A8;
+            --blue-dim:    #233A82;
+            --blue-ghost:  rgba(59,85,168,0.06);
+
+            /* Status */
+            --green:       #4a7a5e;
+            --green-dim:   #385c48;
+            --green-ghost: rgba(74,122,94,0.06);
+            --amber:       #7a7850;
+            --amber-ghost: rgba(122,120,80,0.06);
+            --red:         #8a6262;
+            --red-ghost:   rgba(138,98,98,0.06);
+
+            /* Text */
+            --slate:       #6b7280;
+            --text:        #1a1f2e;
+            --text-2:      #5b657a;
+            --text-3:      #8e97ab;
+
+            /* Typography */
+            --sans:        'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --mono:        'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
+
+            /* Radii */
+            --r:           6px;
+            --r2:          10px;
+
+            /* Shadows */
+            --shadow:      0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.03);
+            --shadow2:     0 4px 16px rgba(0,0,0,0.05);
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg2);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── PAGE HEADER (mirrors .page-header in global.css) ── */
+        .page-header {
+            margin-bottom: 24px;
+        }
+        .page-header-row {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .page-title {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--brand-deep);
+            letter-spacing: -0.4px;
+            line-height: 1.2;
+        }
+        .page-sub {
+            font-size: 12px;
+            color: var(--text-2);
+            margin-top: 4px;
+            letter-spacing: 0.3px;
+        }
+
+        /* ── CONTAINER / CARD (mirrors .card in global.css) ── */
+        .container {
+            width: 100%;
+            max-width: 680px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--r2);
+            padding: 32px;
+            box-shadow: var(--shadow2);
+            animation: fadeUp 0.35s ease both;
+        }
+
+        /* ── LOGO HEADER ── */
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+        .logo-mark {
+            width: 36px; height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .logo-mark img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .logo-text h1 {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--brand-deep);
+            letter-spacing: -0.3px;
+        }
+        .logo-text p {
+            font-size: 11px;
+            color: var(--text-3);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-top: 2px;
+        }
+
+        /* ── SERVER IP ROW ── */
+        .server-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr auto;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        /* ── FORM ELEMENTS ── */
+        .form-group { }
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 6px;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1.5px solid var(--border);
+            border-radius: var(--r);
+            color: var(--text);
+            font-family: var(--sans);
+            font-size: 13px;
+            font-weight: 500;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .form-group input:focus {
+            border-color: var(--brand-accent);
+            box-shadow: 0 0 0 3px rgba(59,85,168,0.08);
+        }
+        .form-group input::placeholder {
+            color: var(--text-3);
+        }
+
+        /* ── LOAD / FETCH BUTTON ── */
+        .fetch-btn {
+            padding: 10px 18px;
+            background: var(--bg);
+            border: 1.5px solid var(--border);
+            border-radius: var(--r);
+            color: var(--blue);
+            font-family: var(--sans);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            align-self: flex-end;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .fetch-btn:hover {
+            border-color: var(--brand-accent);
+            background: var(--blue-ghost);
+        }
+        .fetch-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* ── DIVIDER ── */
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 0 0 20px 0;
+        }
+
+        /* ── SENSOR CARD (mirrors .card) ── */
+        .sensor-card {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--r);
+            padding: 18px 20px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow);
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .sensor-card:hover {
+            border-color: var(--border2);
+            box-shadow: var(--shadow2);
+        }
+
+        .sensor-card-title {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: var(--text-2);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ── REMOVE BUTTON ── */
+        .remove-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--red);
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.15s;
+            margin-left: auto;
+            font-family: var(--sans);
+        }
+        .remove-btn:hover {
+            background: var(--red-ghost);
+            border-color: rgba(138,98,98,0.2);
+        }
+
+        /* ── SENSOR FORM ROW ── */
+        .form-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr 2fr;
+            gap: 10px;
+        }
+
+        /* ── ADD SENSOR BUTTON (outline style) ── */
+        .add-sensor-btn {
+            width: 100%;
+            padding: 10px;
+            background: var(--bg);
+            border: 1px dashed var(--border2);
+            border-radius: var(--r);
+            color: var(--text-2);
+            font-family: var(--sans);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: all 0.15s;
+            letter-spacing: 0.2px;
+        }
+        .add-sensor-btn:hover {
+            border-color: var(--brand-accent);
+            color: var(--blue);
+            border-style: solid;
+            box-shadow: 0 0 0 3px rgba(59,85,168,0.06);
+        }
+
+        /* ── SAVE BUTTON (primary btn) ── */
+        .save-btn {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, var(--brand-mid), var(--brand-accent));
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: var(--r);
+            color: #fff;
+            font-family: var(--sans);
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .save-btn:hover {
+            background: linear-gradient(135deg, var(--brand-deep), var(--brand-mid));
+            box-shadow: 0 4px 12px rgba(35,58,130,0.15);
+        }
+        .save-btn:active {
+            transform: scale(0.99);
+        }
+        .save-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* ── STATUS BOX ── */
+        .status-box {
+            margin-top: 16px;
+            padding: 10px 14px;
+            border-radius: var(--r);
+            font-size: 13px;
+            font-weight: 500;
+            display: none;
+            text-align: center;
+            animation: fadeUp 0.25s ease both;
+        }
+        .status-box.success {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: var(--green-ghost);
+            border: 1px solid rgba(74,122,94,0.25);
+            color: var(--green);
+        }
+        .status-box.error {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: var(--red-ghost);
+            border: 1px solid rgba(138,98,98,0.25);
+            color: var(--red);
+        }
+        .status-box.loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: var(--blue-ghost);
+            border: 1px solid rgba(59,85,168,0.2);
+            color: var(--blue);
+        }
+
+        /* ── ANIMATIONS ── */
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: none; }
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .spinner {
+            display: inline-block;
+            width: 14px; height: 14px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 540px) {
+            .container { padding: 20px; }
+            .form-row,
+            .server-row { grid-template-columns: 1fr; }
+            .logo { flex-direction: column; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+        <!-- Logo -->
+        <div class="logo">
+            <div class="logo-mark">
+                <img src="public/rajdeep_logo.png" alt="Rajdeep Logo" />
+            </div>
+            <div class="logo-text">
+                <h1>CD22 Sensor Setup</h1>
+                <p>Network Configuration</p>
+            </div>
+        </div>
+
+        <!-- Backend Server Connection -->
+        <div class="server-row">
+            <div class="form-group">
+                <label>Backend Server IP</label>
+                <input type="text" id="serverIp" value="194.164.148.145" placeholder="e.g. 194.164.148.145">
+            </div>
+            <div class="form-group">
+                <label>Server Port</label>
+                <input type="text" id="serverPort" value="5002" placeholder="e.g. 5002">
+            </div>
+            <div class="form-group">
+                <label>&nbsp;</label>
+                <button class="fetch-btn" id="fetchBtn" onclick="loadExistingConfig()">
+                    &#8635; Load
+                </button>
+            </div>
+        </div>
+
+        <hr class="divider">
+
+        <!-- Sensor Cards -->
+        <div id="sensorList"></div>
+
+        <!-- Add Sensor Button -->
+        <button class="add-sensor-btn" onclick="addSensor()">
+            + Add Sensor
+        </button>
+
+        <!-- Save Button -->
+        <button class="save-btn" id="saveBtn" onclick="saveConfig()">
+            Save & Update Config
+        </button>
+
+        <!-- Status -->
+        <div id="statusBox" class="status-box"></div>
+
+    </div>
+
+    <script>
+        const SENSOR_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'];
+        let sensorCount = 0;
+
+        function getBaseUrl() {
+            const ip   = document.getElementById('serverIp').value.trim();
+            const port = document.getElementById('serverPort').value.trim();
+            if (!ip || !port) return null;
+            return `http://${ip}:${port}`;
+        }
+
+        function addSensor(ip = '', port = '8234', name = '') {
+            const label = SENSOR_LABELS[sensorCount] || `S${sensorCount + 1}`;
+            const defaultName = name || `Sensor ${label}`;
+            const id = `sensor_${sensorCount}`;
+            sensorCount++;
+
+            const card = document.createElement('div');
+            card.className = 'sensor-card';
+            card.id = id;
+            card.innerHTML = `
+                <div class="sensor-card-title">
+                    Sensor ${label}
+                    <button class="remove-btn" onclick="removeSensor('${id}')">&times;</button>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>IP Address</label>
+                        <input type="text" placeholder="192.168.1.7" value="${ip}" class="sensor-ip">
+                    </div>
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="text" placeholder="8234" value="${port}" class="sensor-port">
+                    </div>
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input type="text" placeholder="Sensor ${label}" value="${defaultName}" class="sensor-name">
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('sensorList').appendChild(card);
+        }
+
+        function removeSensor(id) {
+            const card = document.getElementById(id);
+            if (card) card.remove();
+        }
+
+        /** Fetch existing config from the backend and populate the form */
+        async function loadExistingConfig() {
+            const baseUrl = getBaseUrl();
+            if (!baseUrl) {
+                showStatus('Please enter the Backend Server IP and Port!', 'error');
+                return;
+            }
+
+            const fetchBtn = document.getElementById('fetchBtn');
+            fetchBtn.disabled = true;
+            showStatus('Fetching existing config...', 'loading');
+
+            try {
+                const response = await fetch(`${baseUrl}/config/network`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${response.status}`);
+                }
+
+                const config = await response.json();
+                const entries = Object.entries(config);
+
+                // Clear existing sensor cards
+                const list = document.getElementById('sensorList');
+                list.innerHTML = '';
+                sensorCount = 0;
+
+                if (entries.length === 0) {
+                    // No config — add 2 default empty sensors
+                    addSensor('', '8234', '');
+                    addSensor('', '8234', '');
+                    showStatus('No existing config found. Add your sensors below.', 'success');
+                } else {
+                    entries.forEach(([label, cfg]) => {
+                        addSensor(cfg.ip || '', cfg.port || '8234', cfg.name || `Sensor ${label}`);
+                    });
+                    showStatus(`Loaded ${entries.length} sensor(s) from backend.`, 'success');
+                }
+            } catch (err) {
+                showStatus(`Cannot load config: ${err.message}`, 'error');
+            } finally {
+                fetchBtn.disabled = false;
+            }
+        }
+
+        async function saveConfig() {
+            const baseUrl = getBaseUrl();
+            if (!baseUrl) {
+                showStatus('Please enter the Backend Server IP and Port!', 'error');
+                return;
+            }
+
+            const cards      = document.querySelectorAll('.sensor-card');
+            const saveBtn    = document.getElementById('saveBtn');
+            const statusBox  = document.getElementById('statusBox');
+
+            if (cards.length === 0) {
+                showStatus('Please add at least one sensor!', 'error');
+                return;
+            }
+
+            // Build config object using labels A, B, C, D, E, F
+            const config = {};
+            const labels = SENSOR_LABELS;
+            let valid = true;
+
+            cards.forEach((card, index) => {
+                const ip   = card.querySelector('.sensor-ip').value.trim();
+                const port = card.querySelector('.sensor-port').value.trim();
+                const name = card.querySelector('.sensor-name').value.trim();
+                const label = labels[index] || `S${index + 1}`;
+
+                if (!ip) {
+                    showStatus(`Sensor ${label}: IP address is required!`, 'error');
+                    valid = false;
+                    return;
+                }
+
+                config[label] = {
+                    ip:   ip,
+                    port: parseInt(port) || 8234,
+                    name: name || `Sensor ${label}`
+                };
+            });
+
+            if (!valid) return;
+
+            saveBtn.disabled = true;
+            showStatus('Saving configuration...', 'loading');
+
+            try {
+                const response = await fetch(`${baseUrl}/config/network`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    const active = data.active_sensors || [];
+                    const msg = active.length > 0
+                        ? `Config saved! Active sensors: ${active.join(', ')}`
+                        : 'Config saved successfully!';
+                    showStatus(msg, 'success');
+                } else {
+                    showStatus(`Error: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (err) {
+                showStatus(`Cannot connect to server at ${baseUrl} — Make sure server is running!`, 'error');
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+
+        function showStatus(msg, type) {
+            const box = document.getElementById('statusBox');
+            box.textContent = msg;
+            box.className = `status-box ${type}`;
+        }
+
+        // Start with 2 empty sensors by default
+        addSensor('', '8234', '');
+        addSensor('', '8234', '');
+    </script>
+</body>
+</html>

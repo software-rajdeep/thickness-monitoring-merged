@@ -53,6 +53,7 @@ LIMIT_THICKNESS_RAW = 1_000_000
 CONFIG_FILE_PATH = os.path.join(BASE_DIR, "sensor_config.json")
 NETWORK_CONFIG_FILE_PATH = os.path.join(BASE_DIR, "sensor_network.json")
 THICKNESS_STATE_FILE_PATH = os.path.join(BASE_DIR, "thickness_state.json")
+THICKNESS_LIMIT_FILE_PATH = os.path.join(BASE_DIR, "thickness_limit.json")
 
 # --- ZERO OFFSET ---
 ZERO_OFFSET_MM = 35.0
@@ -160,10 +161,16 @@ def rebuild_active_sensors():
             print(f"  [Config] Sensor {sid_upper} @ {cfg['ip']}:{cfg['port']}")
 
 def refresh_sensor_configs(new_config=None):
-    """Update SENSOR_CONFIGS from file or provided dict; rebuild active sensors."""
+    """Update SENSOR_CONFIGS from file or provided dict; rebuild active sensors.
+    
+    When new_config is provided (from POST /config/network), it fully replaces
+    the in-memory config AND the file — so sensors removed from the HTML form
+    are actually removed from the active sensor connections.
+    When new_config is None, loads from file (used during startup).
+    """
     global SENSOR_CONFIGS
     if new_config:
-        SENSOR_CONFIGS.update(new_config)
+        SENSOR_CONFIGS = dict(new_config)
         save_network_config(SENSOR_CONFIGS)
     else:
         SENSOR_CONFIGS = load_network_config()
@@ -236,6 +243,45 @@ def save_thickness_state(state):
 def init_thickness_state_file():
     if not os.path.exists(THICKNESS_STATE_FILE_PATH):
         save_thickness_state(default_thickness_state())
+
+# --- THICKNESS LIMIT (global, shared across all users) ---
+def default_thickness_limit():
+    return {"active": False, "min": "", "max": ""}
+
+def load_thickness_limit():
+    """Load the global thickness limit from JSON file."""
+    if not os.path.exists(THICKNESS_LIMIT_FILE_PATH):
+        return default_thickness_limit()
+    try:
+        with open(THICKNESS_LIMIT_FILE_PATH, 'r') as file_handle:
+            loaded = json.load(file_handle)
+    except (json.JSONDecodeError, Exception):
+        return default_thickness_limit()
+    limit = default_thickness_limit()
+    limit["active"] = bool(loaded.get("active", False))
+    raw_min = loaded.get("min", "")
+    raw_max = loaded.get("max", "")
+    limit["min"] = "" if raw_min is None else str(raw_min)
+    limit["max"] = "" if raw_max is None else str(raw_max)
+    return limit
+
+def save_thickness_limit(limit):
+    """Save the global thickness limit to JSON file."""
+    with open(THICKNESS_LIMIT_FILE_PATH, 'w') as file_handle:
+        json.dump(limit, file_handle, indent=4)
+
+def init_thickness_limit_file():
+    if not os.path.exists(THICKNESS_LIMIT_FILE_PATH):
+        save_thickness_limit(default_thickness_limit())
+
+def get_thickness_limit():
+    global thickness_limit
+    return thickness_limit
+
+def set_thickness_limit(new_limit):
+    global thickness_limit
+    thickness_limit = new_limit
+    save_thickness_limit(new_limit)
 
 def get_thickness_state():
     global thickness_state
@@ -567,6 +613,7 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 active_sensors_map = {}
 sensors_lock = threading.Lock()
 thickness_state = load_thickness_state()
+thickness_limit = load_thickness_limit()
 
 stream_state = {
     "active": True,
@@ -609,6 +656,44 @@ def get_server_config():
         "db_name": DB_NAME,
     }), 200
 
+# Simple CORS support for standalone HTML pages (like sensor_setup.html)
+# that make cross-origin requests from file:// or different origins.
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Accept'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
+    return response
+
+# ==========================================
+# APIS - NETWORK CONFIG (sensor_network.json)
+# ==========================================
+@app.route('/config/network', methods=['GET', 'POST'])
+def handle_network_config():
+    """GET: return the current sensor_network.json config.
+       POST: overwrite sensor_network.json and rebuild active sensor connections."""
+    if request.method == 'GET':
+        try:
+            config = load_network_config()
+            return jsonify(config), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    elif request.method == 'POST':
+        try:
+            new_config = request.json
+            if not new_config:
+                return jsonify({"error": "No JSON payload provided"}), 400
+            save_network_config(new_config)
+            # Reload SENSOR_CONFIGS and rebuild active sensor connections
+            refresh_sensor_configs(new_config)
+            active = list(active_sensors_map.keys())
+            return jsonify({
+                "message": "Network configuration saved and active sensors rebuilt.",
+                "active_sensors": active
+            }), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
 # ==========================================
 # APIS - CONFIG FILE SYNC
 # ==========================================
@@ -637,6 +722,26 @@ def handle_config_file():
 @app.route('/thickness/state', methods=['GET'])
 def thickness_state_api():
     return jsonify(get_thickness_state()), 200
+
+@app.route('/thickness/limit', methods=['GET', 'POST'])
+def thickness_limit_api():
+    """Global thickness limit, shared across all users and sessions.
+
+    GET  -> current limit {active, min, max}
+    POST -> persist a new limit; survives logout, login as another user,
+            and server restarts (stored in thickness_limit.json).
+    """
+    if request.method == 'GET':
+        return jsonify(get_thickness_limit()), 200
+    data = request.get_json(silent=True) or {}
+    limit = default_thickness_limit()
+    limit["active"] = bool(data.get("active", False))
+    raw_min = data.get("min", "")
+    raw_max = data.get("max", "")
+    limit["min"] = "" if raw_min is None else str(raw_min)
+    limit["max"] = "" if raw_max is None else str(raw_max)
+    set_thickness_limit(limit)
+    return jsonify({"message": "Thickness limit saved.", **limit}), 200
 
 @app.route('/thickness/setup-ready', methods=['POST'])
 def thickness_setup_ready():
@@ -1234,6 +1339,7 @@ if __name__ == '__main__':
     init_network_config_file()
     refresh_sensor_configs()
     init_thickness_state_file()
+    init_thickness_limit_file()
     init_db()
     start_background_tasks()
     print(f"  Active sensors: {list(active_sensors_map.keys())}")

@@ -17,15 +17,16 @@ export default function RunModePage({
   onResetGap,
   calibrationBusy,
   runModeVisitKey,
+  thicknessLimit,
+  setThicknessLimit,
 }) {
   if (!ROLE_ACCESS[user.role]?.includes("run-mode")) return <AccessDenied />;
+
+  const { active: limitActive, min: minLimit, max: maxLimit } = thicknessLimit;
 
   const [showGapDialog, setShowGapDialog] = useState(false);
   const [gapValue, setGapValue] = useState("");
   const [gapError, setGapError] = useState("");
-  const [limitActive, setLimitActive] = useState(false);
-  const [minLimit, setMinLimit] = useState("");
-  const [maxLimit, setMaxLimit] = useState("");
 
   // Auto-gap state
   const [autoGapMode, setAutoGapMode] = useState(false);
@@ -45,7 +46,7 @@ export default function RunModePage({
   const sensorsOutOfRange = latestThickness !== null && parseFloat(latestThickness) === 0;
 
   // Get last 100 thickness readings for the history table
-  const thicknessHistory = [...rows].reverse().slice(0, 100).filter(r => r.thickness !== null);
+  const thicknessHistory = [...rows].slice(0, 100).filter(r => r.thickness !== null).reverse();
 
 
   useEffect(() => {
@@ -59,13 +60,18 @@ export default function RunModePage({
   // Load saved tolerance values from thicknessState when available
   useEffect(() => {
     if (autoGapActive && thicknessState) {
+      const newLimit = { ...thicknessLimit };
+      let changed = false;
       if (thicknessState.thickness_tolerance_min !== null && thicknessState.thickness_tolerance_min !== undefined) {
-        setMinLimit(String(thicknessState.thickness_tolerance_min));
+        const val = String(thicknessState.thickness_tolerance_min);
+        if (val !== newLimit.min) { newLimit.min = val; changed = true; }
       }
       if (thicknessState.thickness_tolerance_max !== null && thicknessState.thickness_tolerance_max !== undefined) {
-        setMaxLimit(String(thicknessState.thickness_tolerance_max));
+        const val = String(thicknessState.thickness_tolerance_max);
+        if (val !== newLimit.max) { newLimit.max = val; changed = true; }
       }
-      setLimitActive(true);
+      if (!newLimit.active) { newLimit.active = true; changed = true; }
+      if (changed) setThicknessLimit(newLimit);
     }
   }, [autoGapActive, thicknessState]);
 
@@ -111,9 +117,13 @@ export default function RunModePage({
         setGapValue("");
         setGapError("");
         // Apply tolerance limits immediately
-        if (tolMin !== null) setMinLimit(String(tolMin));
-        if (tolMax !== null) setMaxLimit(String(tolMax));
-        setLimitActive(tolMin !== null);
+        if (tolMin !== null || tolMax !== null) {
+          setThicknessLimit({
+            active: tolMin !== null,
+            min: tolMin !== null ? String(tolMin) : "",
+            max: tolMax !== null ? String(tolMax) : "",
+          });
+        }
       }
     } else {
       // Manual gap mode
@@ -137,9 +147,7 @@ export default function RunModePage({
     setAutoGapMode(false);
     setObjectThickness("");
     setToleranceRange("");
-    setMinLimit("");
-    setMaxLimit("");
-    setLimitActive(false);
+    setThicknessLimit({ active: false, min: "", max: "" });
   }
 
   function getThicknessColor(v) {
@@ -555,7 +563,7 @@ export default function RunModePage({
           <span className="section-title">Thickness Limit</span>
           <button
             className={limitActive ? "btn btn-sm btn-red" : "btn btn-sm btn-outline"}
-            onClick={() => setLimitActive((current) => !current)}
+            onClick={() => setThicknessLimit(prev => ({ ...prev, active: !prev.active }))}
           >
             {limitActive ? "Disable Limit" : "Enable Limit"}
           </button>
@@ -568,14 +576,14 @@ export default function RunModePage({
           <div>
             <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)" }}>MIN (mm)</div>
             <input type="number" className="form-input" placeholder="e.g. 4"
-              value={minLimit} onChange={(e) => setMinLimit(e.target.value)}
+              value={minLimit} onChange={(e) => setThicknessLimit(prev => ({ ...prev, min: e.target.value }))}
               style={{ width: 100, fontFamily: "var(--mono)" }} />
           </div>
           <div style={{ color: "var(--text-3)", fontSize: 18, marginTop: 16 }}>-</div>
           <div>
             <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)" }}>MAX (mm)</div>
             <input type="number" className="form-input" placeholder="e.g. 8"
-              value={maxLimit} onChange={(e) => setMaxLimit(e.target.value)}
+              value={maxLimit} onChange={(e) => setThicknessLimit(prev => ({ ...prev, max: e.target.value }))}
               style={{ width: 100, fontFamily: "var(--mono)" }} />
           </div>
           {limitActive && (

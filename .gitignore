@@ -45,3 +45,4 @@ temp_*.py
 backend/venv/
 .vercel/
 backend/email_alert_config.json
+.vercel
