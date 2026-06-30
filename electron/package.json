@@ -7,14 +7,14 @@
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
-    "start": "electron .",
-    "dev": "NODE_ENV=development electron .",
+    "start": "./node_modules/electron/dist/electron .",
+    "dev": "NODE_ENV=development ./node_modules/electron/dist/electron .",
     "build:rpi32": "npx electron-builder --linux --armv7l",
     "build:rpi64": "npx electron-builder --linux --arm64",
-    "setup": "bash install.sh --autostart"
+    "setup": "node fix-electron-require.js"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^33.4.11",
     "electron-builder": "^25.0.0"
   },
   "build": {
@@ -32,11 +32,17 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["armv7l", "arm64"]
+          "arch": [
+            "armv7l",
+            "arm64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["armhf", "arm64"]
+          "arch": [
+            "armhf",
+            "arm64"
+          ]
         }
       ],
       "category": "Utility",

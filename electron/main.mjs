@@ -1,22 +1,53 @@
 /**
- * Thickness Monitor — Electron Main Process
+ * Thickness Monitor — Electron Main Process (ESM)
  *
- * Launches a full-screen BrowserWindow pointed at the Vercel-deployed frontend.
- * Detects network outages with a periodic ping and shows a professional
- * offline page. Automatically reloads the app when connectivity returns.
+ * Using ESM (.mjs) to bypass the CJS npm 'electron' package shadow.
+ * Electron 33 registers 'electron' as a native built-in module,
+ * but the npm CJS package shadows it. ESM import has different
+ * resolution rules and can access the real built-in module.
  *
- * This process does NOT manage or interact with pi_client.py in any way.
- * pi_client.py runs independently via the pi-merged-client systemd service.
- *
- * IMPORTANT: The npm 'electron' package's index.js returns a binary path
- * string, NOT the Electron API. We bypass this by modifying the npm
- * package entry point after installation (see fix-electron-require.js).
- * With the fix applied, require('electron') returns the real built-in module.
+ * NOTE: This file MUST be .mjs (not .js) to avoid the CJS shim.
  */
 
-const { app, BrowserWindow, Menu, net, powerSaveBlocker } = require('electron');
-const path = require('path');
+const path = (await import('path')).default;
+const { fileURLToPath } = await import('url');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ─── Load Electron's built-in module ─────────────────────────────────────────
+// We use dynamic import() which bypasses CJS require and can access
+// Electron's native ESM built-in module.
+let app, BrowserWindow, Menu, net, powerSaveBlocker;
+
+try {
+  const electron = await import('electron');
+  app = electron.app;
+  BrowserWindow = electron.BrowserWindow;
+  Menu = electron.Menu;
+  net = electron.net;
+  powerSaveBlocker = electron.powerSaveBlocker;
+  
+  if (!app) {
+    throw new Error('app not available from import');
+  }
+} catch (err) {
+  // Fallback: try different import paths
+  try {
+    const electronFromPath = await import(
+      path.join(__dirname, 'node_modules', 'electron', 'dist', 'resources', 'default_app.asar', 'main.js')
+    );
+    app = electronFromPath.app;
+    BrowserWindow = electronFromPath.BrowserWindow;
+    Menu = electronFromPath.Menu;
+    net = electronFromPath.net;
+    powerSaveBlocker = electronFromPath.powerSaveBlocker;
+  } catch (err2) {
+    console.error('[Electron] Fatal: Could not load Electron module:', err.message);
+    console.error('[Electron] Fallback also failed:', err2.message);
+    process.exit(1);
+  }
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 const TARGET_URL = 'https://merged-version.vercel.app';
 const OFFLINE_FILE = path.join(__dirname, 'offline.html');
 const ONLINE_PING_MS = 5000;
