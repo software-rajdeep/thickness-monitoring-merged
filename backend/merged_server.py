@@ -732,9 +732,34 @@ def handle_config_file():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+def _thickness_ctx():
+    """Resolve which calibration state a /thickness/* request targets.
+
+    Real provisioned device (device_id in query or JSON body) -> that device's
+    per-device state, persisted to devices.calibration. Otherwise -> the global
+    legacy state (unchanged behaviour for the original single install).
+
+    Returns (device_id, get_state, set_state, latest_reading_dict).
+    """
+    did = request.args.get("device_id")
+    if not did and request.is_json:
+        did = (request.get_json(silent=True) or {}).get("device_id")
+    if did and did != LEGACY_DEVICE_ID:
+        st = _get_device_state(did)
+        def getter():
+            return st["thickness"]
+        def setter(s):
+            st["thickness"] = s
+            _save_device_calibration(did, s)
+        return did, getter, setter, dict(st.get("last_raw") or {})
+    legacy_latest = {k: v for k, v in last_ingest_reading.items() if v is not None}
+    return LEGACY_DEVICE_ID, get_thickness_state, set_thickness_state, legacy_latest
+
+
 @app.route('/thickness/state', methods=['GET'])
 def thickness_state_api():
-    return jsonify(get_thickness_state()), 200
+    _did, getter, _setter, _latest = _thickness_ctx()
+    return jsonify(getter()), 200
 
 @app.route('/thickness/limit', methods=['GET', 'POST'])
 def thickness_limit_api():
@@ -758,93 +783,62 @@ def thickness_limit_api():
 
 @app.route('/thickness/setup-ready', methods=['POST'])
 def thickness_setup_ready():
-    if CLOUD_MODE or not active_sensors_map:
-        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
-        if not reading:
-            return jsonify({"error": "No sensor reading received yet. Ensure the Pi client is running and sending data."}), 400
-        updated_state = default_thickness_state()
-        updated_state["setup_ready"] = True
-        updated_state["captured_at"] = datetime.datetime.now().isoformat()
-        for sid, val in reading.items():
-            updated_state["reference_readings"][sid] = round(float(val), 3)
-        set_thickness_state(updated_state)
-        return jsonify({
-            "message": "Starting readings captured successfully.",
-            "setup_ready": True,
-            "captured_at": updated_state.get("captured_at"),
-            "reference_readings": updated_state.get("reference_readings", {}),
-            "captured_readings": reading,
-        }), 200
-    captured_readings, failures = capture_starting_readings()
-    if not captured_readings:
-        return jsonify({"error": "Unable to capture starting readings."}), 500
-    response_payload = {
+    _did, getter, setter, latest = _thickness_ctx()
+    reading = {k: v for k, v in latest.items() if v is not None}
+    if not reading:
+        return jsonify({"error": "No sensor reading received yet. Ensure the agent is running and sending data."}), 400
+    updated_state = default_thickness_state()
+    updated_state["setup_ready"] = True
+    updated_state["captured_at"] = datetime.datetime.now().isoformat()
+    for sid, val in reading.items():
+        updated_state["reference_readings"][sid] = round(float(val), 3)
+    setter(updated_state)
+    return jsonify({
         "message": "Starting readings captured successfully.",
         "setup_ready": True,
-        "captured_at": get_thickness_state().get("captured_at"),
-        "reference_readings": get_thickness_state().get("reference_readings", {}),
-        "captured_readings": captured_readings,
-    }
-    if failures:
-        response_payload["warnings"] = [f"Sensor {sensor_id} did not return a reading." for sensor_id in failures]
-    return jsonify(response_payload), 200
+        "captured_at": updated_state.get("captured_at"),
+        "reference_readings": updated_state.get("reference_readings", {}),
+        "captured_readings": reading,
+    }), 200
 
 @app.route('/thickness/calibration', methods=['POST'])
 def thickness_calibration():
-    if CLOUD_MODE:
-        data = request.json or {}
-        try:
-            reference_thickness = float(data.get("reference_thickness"))
-        except (TypeError, ValueError):
-            return jsonify({"error": "A valid reference thickness is required."}), 400
-        if reference_thickness < 0:
-            return jsonify({"error": "Reference thickness must be zero or greater."}), 400
-        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
-        if not reading:
-            return jsonify({"error": "No sensor reading received yet. Ensure the Pi client is running and sending data."}), 400
-        current_state = get_thickness_state()
-        updated_state = default_thickness_state()
-        updated_state["setup_ready"] = current_state.get("setup_ready", False)
-        updated_state["captured_at"] = current_state.get("captured_at")
-        updated_state["reference_readings"] = normalize_sensor_readings(current_state.get("reference_readings", {}))
-        updated_state["calibration_completed"] = True
-        updated_state["calibration_active"] = True
-        updated_state["calibration_captured_at"] = datetime.datetime.now().isoformat()
-        updated_state["calibration_reference_thickness"] = round(float(reference_thickness), 3)
-        for sensor_id, reading_val in reading.items():
-            updated_state["calibration_baseline_readings"][sensor_id] = reading_val
-        set_thickness_state(updated_state)
-        captured_readings = reading
-        failures = []
-    else:
-        if not active_sensors_map:
-            return jsonify({"error": "No active sensors available."}), 400
-        data = request.json or {}
-        try:
-            reference_thickness = float(data.get("reference_thickness"))
-        except (TypeError, ValueError):
-            return jsonify({"error": "A valid reference thickness is required."}), 400
-        if reference_thickness < 0:
-            return jsonify({"error": "Reference thickness must be zero or greater."}), 400
-        captured_readings, failures = capture_calibration(reference_thickness)
-        if not captured_readings:
-            return jsonify({"error": "Unable to capture calibration readings."}), 500
-
-    response_payload = {
+    _did, getter, setter, latest = _thickness_ctx()
+    data = request.json or {}
+    try:
+        reference_thickness = float(data.get("reference_thickness"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "A valid reference thickness is required."}), 400
+    if reference_thickness < 0:
+        return jsonify({"error": "Reference thickness must be zero or greater."}), 400
+    reading = {k: v for k, v in latest.items() if v is not None}
+    if not reading:
+        return jsonify({"error": "No sensor reading received yet. Ensure the agent is running and sending data."}), 400
+    current_state = getter()
+    updated_state = default_thickness_state()
+    updated_state["setup_ready"] = current_state.get("setup_ready", False)
+    updated_state["captured_at"] = current_state.get("captured_at")
+    updated_state["reference_readings"] = normalize_sensor_readings(current_state.get("reference_readings", {}))
+    updated_state["calibration_completed"] = True
+    updated_state["calibration_active"] = True
+    updated_state["calibration_captured_at"] = datetime.datetime.now().isoformat()
+    updated_state["calibration_reference_thickness"] = round(float(reference_thickness), 3)
+    for sensor_id, reading_val in reading.items():
+        updated_state["calibration_baseline_readings"][sensor_id] = round(float(reading_val), 3)
+    setter(updated_state)
+    return jsonify({
         "message": "Calibration saved successfully.",
         "calibration_active": True,
-        "calibration_captured_at": get_thickness_state().get("calibration_captured_at"),
-        "calibration_reference_thickness": get_thickness_state().get("calibration_reference_thickness", 0.0),
-        "calibration_baseline_readings": get_thickness_state().get("calibration_baseline_readings", {}),
-        "captured_readings": captured_readings,
-    }
-    if failures:
-        response_payload["warnings"] = [f"Sensor {sensor_id} did not return a reading." for sensor_id in failures]
-    return jsonify(response_payload), 200
+        "calibration_captured_at": updated_state.get("calibration_captured_at"),
+        "calibration_reference_thickness": updated_state.get("calibration_reference_thickness", 0.0),
+        "calibration_baseline_readings": updated_state.get("calibration_baseline_readings", {}),
+        "captured_readings": reading,
+    }), 200
 
 @app.route('/thickness/gap', methods=['POST'])
 def thickness_gap_set():
     """Set the distance between the two sensor faces (opposite mode)."""
+    _did, getter, setter, _latest = _thickness_ctx()
     data = request.json or {}
     try:
         gap_distance = float(data.get("gap_distance"))
@@ -852,11 +846,11 @@ def thickness_gap_set():
         return jsonify({"error": "A valid gap distance is required."}), 400
     if gap_distance <= 0:
         return jsonify({"error": "Gap distance must be greater than zero."}), 400
-    current_state = get_thickness_state()
+    current_state = getter()
     current_state["gap_distance"] = round(gap_distance, 3)
     current_state["calibration_completed"] = True
     current_state["calibration_active"] = True
-    set_thickness_state(current_state)
+    setter(current_state)
 
     return jsonify({
         "message": "Gap distance set successfully.",
@@ -867,8 +861,7 @@ def thickness_gap_set():
 @app.route('/thickness/auto-gap', methods=['POST'])
 def thickness_auto_gap_set():
     """Auto-calculate gap distance using object thickness (opposite mode)."""
-    if not CLOUD_MODE and not active_sensors_map:
-        return jsonify({"error": "No active sensors available."}), 400
+    _did, getter, setter, latest = _thickness_ctx()
     data = request.json or {}
     try:
         object_thickness = float(data.get("object_thickness"))
@@ -876,20 +869,11 @@ def thickness_auto_gap_set():
         return jsonify({"error": "A valid object thickness is required."}), 400
     if object_thickness <= 0:
         return jsonify({"error": "Object thickness must be greater than zero."}), 400
-    if CLOUD_MODE:
-        reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
-        if len(reading) < 2:
-            return jsonify({"error": "Waiting for readings from both sensors. Ensure Pi client is running."}), 400
-        captured_readings = {k: round(float(v), 3) for k, v in reading.items()}
-        failures = []
-    else:
-        captured_readings, failures = capture_active_sensor_readings()
-    if not captured_readings or len(captured_readings) < 2:
-        return jsonify({"error": "Unable to capture readings from both sensors."}), 500
-    dist_A = captured_readings.get("A")
-    dist_B = captured_readings.get("B")
-    if dist_A is None or dist_B is None:
-        return jsonify({"error": "Both sensor readings are required."}), 500
+    reading = {k: round(float(v), 3) for k, v in latest.items() if v is not None}
+    if len(reading) < 2 or reading.get("A") is None or reading.get("B") is None:
+        return jsonify({"error": "Waiting for readings from both sensors. Ensure the agent is running."}), 400
+    dist_A = reading.get("A")
+    dist_B = reading.get("B")
     total_gap = 2 * ZERO_OFFSET_MM + float(dist_A) + float(dist_B) + object_thickness
     tol_min = data.get("thickness_tolerance_min")
     tol_max = data.get("thickness_tolerance_max")
@@ -899,7 +883,7 @@ def thickness_auto_gap_set():
     if tol_max is not None:
         try: tol_max = float(tol_max)
         except: tol_max = None
-    current_state = get_thickness_state()
+    current_state = getter()
     current_state["gap_distance"] = round(total_gap, 3)
     current_state["calibration_completed"] = True
     current_state["calibration_active"] = True
@@ -907,25 +891,28 @@ def thickness_auto_gap_set():
     current_state["object_thickness"] = object_thickness
     current_state["thickness_tolerance_min"] = tol_min
     current_state["thickness_tolerance_max"] = tol_max
-    set_thickness_state(current_state)
+    setter(current_state)
 
-    response = {
+    return jsonify({
         "message": "Auto-gap setup completed successfully.",
         "gap_distance": round(total_gap, 3),
         "calibration_active": True,
         "auto_gap_active": True,
         "object_thickness": object_thickness,
-        "captured_readings": captured_readings,
+        "captured_readings": reading,
         "thickness_tolerance_min": tol_min,
         "thickness_tolerance_max": tol_max,
-    }
-    if failures:
-        response["warnings"] = [f"Sensor {sensor_id} did not return a reading." for sensor_id in failures]
-    return jsonify(response), 200
+    }), 200
 
 @app.route('/thickness/calibration/reset', methods=['POST'])
 def thickness_calibration_reset():
-    updated_state = reset_calibration_state()
+    _did, getter, setter, _latest = _thickness_ctx()
+    current_state = getter()
+    updated_state = default_thickness_state()
+    updated_state["setup_ready"] = current_state.get("setup_ready", False)
+    updated_state["captured_at"] = current_state.get("captured_at")
+    updated_state["reference_readings"] = normalize_sensor_readings(current_state.get("reference_readings", {}))
+    setter(updated_state)
     return jsonify({
         "message": "Calibration reset successfully.",
         "calibration_active": updated_state.get("calibration_active", False),
@@ -1709,11 +1696,47 @@ def _verify_device(device_id, device_key):
         return None
     return row
 
+def _load_device_calibration(device_id):
+    """Load a device's persisted calibration JSON from the DB; default if none."""
+    conn, cur = _db_connect()
+    if conn is None:
+        return default_thickness_state()
+    try:
+        cur.execute("SELECT calibration FROM devices WHERE device_id=%s", (device_id,))
+        r = cur.fetchone()
+    except Exception:
+        return default_thickness_state()
+    finally:
+        conn.close()
+    if r and r[0]:
+        try:
+            st = default_thickness_state()
+            st.update(r[0] if isinstance(r[0], dict) else json.loads(r[0]))
+            return st
+        except Exception:
+            return default_thickness_state()
+    return default_thickness_state()
+
+def _save_device_calibration(device_id, state):
+    """Persist a device's calibration JSON so it survives a server restart."""
+    conn, cur = _db_connect()
+    if conn is None:
+        return
+    try:
+        cur.execute("UPDATE devices SET calibration=%s WHERE device_id=%s",
+                    (json.dumps(state), device_id))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
 def _get_device_state(device_id):
     st = device_state.get(device_id)
     if st is None:
         st = {"windows": {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")},
-              "thickness": default_thickness_state(), "n": 0}
+              "thickness": _load_device_calibration(device_id), "n": 0,
+              "last_raw": {}, "latest": None, "seq": 0}
         device_state[device_id] = st
     return st
 
@@ -1766,16 +1789,16 @@ def _process_device_reading(device_id, a, b, c, now):
     raw_thickness = _compute_thickness(a, b, tstate)
     filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), tstate)
 
-    payload = {
+    # Stash the latest reading; the stream loop emits it to this device's room at a
+    # steady 5 Hz (emitting from this HTTP worker thread was choppy in threading mode).
+    st["last_raw"] = {k: v for k, v in reading.items() if v is not None}
+    st["latest"] = {
         "timestamp": now.isoformat(),
         "device_id": device_id,
         "distance_A": a, "distance_B": b, "distance_C": c,
         "thickness": raw_thickness,
     }
-    try:
-        socketio.emit("sensor_reading", payload, room=device_id)
-    except Exception:
-        pass
+    st["seq"] = st.get("seq", 0) + 1
 
     conn, cur = _db_connect()
     if conn is not None:
@@ -1813,6 +1836,8 @@ def stream_ingest_loop():
     inserts_since_trim = 0
     # Rolling buffers for the moving-average filter (one per sensor)
     filter_windows = {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")}
+    # Last emitted seq per device room (so we only emit fresh readings).
+    device_emit_seq = {}
 
     while True:
         if not stream_state["active"]:
@@ -1912,6 +1937,18 @@ def stream_ingest_loop():
                     except Exception:
                         pass
                     db_conn, db_cur = _db_connect()
+
+        # Per-device live emit (smooth, single-threaded). Push each provisioned
+        # device's latest reading to its own socket room when a new reading has
+        # arrived since the previous tick. Runs at the same 5 Hz as the loop.
+        for did, st in list(device_state.items()):
+            seq = st.get("seq", 0)
+            if st.get("latest") and seq != device_emit_seq.get(did):
+                device_emit_seq[did] = seq
+                try:
+                    socketio.emit("sensor_reading", st["latest"], room=did)
+                except Exception:
+                    pass
 
         target_delay = 1.0 / max(stream_state["target_rate_hz"], 1.0)
         time.sleep(target_delay)

@@ -83,9 +83,15 @@ export default function App() {
     setToast({ msg, type, key: Date.now() });
   }
 
+  // Append the selected device to scope a thickness call to that device.
+  function deviceQuery() {
+    const d = selectedDeviceRef.current;
+    return d ? `?device_id=${encodeURIComponent(d)}` : "";
+  }
+
   async function loadThicknessState() {
     try {
-      const response = await fetch(`${SERVER}/thickness/state`);
+      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`);
       if (!response.ok) return;
       const data = await response.json();
       setThicknessState(data);
@@ -96,7 +102,7 @@ export default function App() {
 
   async function refreshThicknessState() {
     try {
-      const response = await fetch(`${SERVER}/thickness/state`);
+      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`);
       if (!response.ok) return null;
       const data = await response.json();
       setThicknessState(data);
@@ -152,6 +158,7 @@ export default function App() {
         body: JSON.stringify({
           reference_thickness: referenceThickness,
           username: user?.username,
+          device_id: selectedDeviceRef.current,
         }),
       });
       const data = await response.json();
@@ -179,7 +186,7 @@ export default function App() {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: user?.username }),
+        body: JSON.stringify({ username: user?.username, device_id: selectedDeviceRef.current }),
       });
       const data = await response.json();
 
@@ -211,6 +218,7 @@ export default function App() {
           thickness_tolerance_min: toleranceMin || null,
           thickness_tolerance_max: toleranceMax || null,
           username: user?.username,
+          device_id: selectedDeviceRef.current,
         }),
       });
       const data = await response.json();
@@ -240,6 +248,7 @@ export default function App() {
         body: JSON.stringify({
           gap_distance: gapDistance,
           username: user?.username,
+          device_id: selectedDeviceRef.current,
         }),
       });
       const data = await response.json();
@@ -266,7 +275,7 @@ export default function App() {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: user?.username }),
+        body: JSON.stringify({ username: user?.username, device_id: selectedDeviceRef.current }),
       });
       const data = await response.json();
 
@@ -401,6 +410,7 @@ export default function App() {
     setRows([]);
     dataBufferRef.current = [];
     counterRef.current = 1;
+    loadThicknessState();   // reflect the new device's calibration
     if (socketRef.current) {
       disconnectSocket();
       connectSocket();
