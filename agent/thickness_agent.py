@@ -35,6 +35,7 @@ import threading
 import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import math
 import requests
 
 # ----------------------------------------------------------------------------
@@ -42,6 +43,12 @@ import requests
 # ----------------------------------------------------------------------------
 DEFAULT_SERVER_URL = os.environ.get("SERVER_URL", "https://194-164-148-145.sslip.io")
 WIZARD_PORT        = int(os.environ.get("WIZARD_PORT", "7000"))
+# Bind address for the setup wizard. 127.0.0.1 = local only (safest). Set to
+# 0.0.0.0 to reach the wizard from another machine on a headless Raspberry Pi.
+WIZARD_HOST        = os.environ.get("WIZARD_HOST", "127.0.0.1")
+# SIMULATE=1 generates synthetic readings instead of talking to real sensors —
+# lets you confirm the Pi -> server -> dashboard pipeline with no sensors wired.
+SIMULATE           = os.environ.get("SIMULATE", "").lower() in ("1", "true", "yes")
 POST_RATE_HZ       = float(os.environ.get("POST_RATE_HZ", "5"))
 POST_INTERVAL      = 1.0 / POST_RATE_HZ
 
@@ -209,8 +216,12 @@ class Uploader(threading.Thread):
             t0 = time.monotonic()
             payload = {"timestamp": datetime.datetime.now().isoformat()}
             any_val = False
-            for sid, sensor in self.sensors.items():
-                v = sensor.read_mm()
+            for idx, (sid, sensor) in enumerate(self.sensors.items()):
+                if SIMULATE:
+                    # Slowly varying synthetic distance (~18-22 mm) per sensor.
+                    v = 20.0 + 2.0 * math.sin(time.monotonic() / 3.0 + idx)
+                else:
+                    v = sensor.read_mm()
                 payload[f"sensor_{sid}"] = round(v, 3) if v is not None else None
                 self.status["sensors"][sid] = v is not None
                 any_val = any_val or v is not None
@@ -376,11 +387,54 @@ class WizardHandler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+def config_from_env():
+    """Headless activation: build a config from DEVICE_ID + DEVICE_KEY (+ optional
+    SENSORS="A=192.168.1.200,B=192.168.1.201") env vars, validating with the server.
+    Lets a Raspberry Pi be configured with no browser. Returns a config dict or None."""
+    did = os.environ.get("DEVICE_ID")
+    key = os.environ.get("DEVICE_KEY")
+    if not (did and key):
+        return None
+    server = DEFAULT_SERVER_URL
+    try:
+        info = activate(server, did, key)
+    except Exception as e:
+        print(f"[agent] env activation failed: {e}", flush=True)
+        return None
+    sensors = {}
+    raw = os.environ.get("SENSORS", "")
+    if raw:
+        for part in raw.split(","):
+            if "=" in part:
+                sid, addr = part.split("=", 1)
+                bits = addr.strip().split(":")
+                sensors[sid.strip().upper()] = {
+                    "ip": bits[0].strip(),
+                    "port": int(bits[1]) if len(bits) > 1 else SENSOR_PORT_DEFAULT,
+                }
+    if not sensors:
+        defaults = {"A": "192.168.1.200", "B": "192.168.1.201", "C": "192.168.1.202"}
+        for lbl in info.get("sensor_labels", ["A", "B"]):
+            sensors[lbl] = {"ip": defaults.get(lbl, "192.168.1.200"), "port": SENSOR_PORT_DEFAULT}
+    return {
+        "server_url": server, "device_id": did, "device_key": key,
+        "customer_name": info.get("customer_name"), "sensor_mode": info.get("sensor_mode"),
+        "sensors": sensors,
+    }
+
+
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 def main():
     cfg = load_config()
+    if not cfg:
+        # Headless path: configure from environment variables if provided.
+        env_cfg = config_from_env()
+        if env_cfg:
+            save_config(env_cfg)
+            cfg = env_cfg
+            print(f"[agent] configured from environment for {cfg.get('customer_name','?')}", flush=True)
     uploader_holder = {"u": None}
 
     def start_uploader(c):
@@ -393,10 +447,11 @@ def main():
     WizardHandler.server_url = (cfg or {}).get("server_url", DEFAULT_SERVER_URL)
     WizardHandler.on_saved = start_uploader
 
-    # Always serve the wizard (also used for re-configuration), bound to localhost.
-    httpd = ThreadingHTTPServer(("127.0.0.1", WIZARD_PORT), WizardHandler)
+    # Always serve the wizard (also used for re-configuration).
+    httpd = ThreadingHTTPServer((WIZARD_HOST, WIZARD_PORT), WizardHandler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    print(f"[agent] setup wizard at http://localhost:{WIZARD_PORT}", flush=True)
+    print(f"[agent] setup wizard at http://{WIZARD_HOST}:{WIZARD_PORT}"
+          + ("  (SIMULATE mode)" if SIMULATE else ""), flush=True)
 
     if cfg and cfg.get("device_id") and cfg.get("sensors"):
         print(f"[agent] configured for {cfg.get('customer_name','?')} ({cfg['device_id']}); starting.", flush=True)
