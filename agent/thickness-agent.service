@@ -5,12 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Path to the installed binary (PyInstaller onefile) or: /usr/bin/python3 /opt/thickness-agent/thickness_agent.py
+# Headless config (optional): DEVICE_ID / DEVICE_KEY / SENSORS / SERVER_URL live
+# in this file. The leading "-" means "don't fail if it's missing" (wizard path).
+EnvironmentFile=-/etc/thickness-agent/agent.env
+Environment=THICKNESS_AGENT_CONFIG=/etc/thickness-agent/config.json
 ExecStart=/opt/thickness-agent/thickness-agent
 Restart=always
 RestartSec=5
-# Config lives at /etc/thickness-agent/config.json (created by the setup wizard)
-Environment=THICKNESS_AGENT_CONFIG=/etc/thickness-agent/config.json
 
 [Install]
 WantedBy=multi-user.target

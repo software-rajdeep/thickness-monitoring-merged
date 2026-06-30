@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+systemctl stop thickness-agent.service || true
+systemctl disable thickness-agent.service >/dev/null 2>&1 || true
+exit 0

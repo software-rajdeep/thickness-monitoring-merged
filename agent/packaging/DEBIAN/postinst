@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+mkdir -p /etc/thickness-agent
+systemctl daemon-reload
+systemctl enable thickness-agent.service >/dev/null 2>&1 || true
+systemctl restart thickness-agent.service || true
+echo ""
+echo "=================================================================="
+echo " Thickness Agent installed and running."
+echo " Activate: open http://localhost:7000  (setup wizard)"
+echo " Headless: put DEVICE_ID/DEVICE_KEY/SENSORS in"
+echo "           /etc/thickness-agent/agent.env then:"
+echo "           sudo systemctl restart thickness-agent"
+echo "=================================================================="
+exit 0

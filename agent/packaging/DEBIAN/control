@@ -1,0 +1,9 @@
+Package: thickness-agent
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Rajdeep Analytics <aadit@rajdeepanalytics.com>
+Description: Thickness Agent - CD22 sensor reader and cloud uploader
+ Reads CD22 thickness sensors over TCP and uploads readings to the
+ Rajdeep cloud server, authenticated per-device. Runs as a service.

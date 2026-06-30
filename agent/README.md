@@ -19,7 +19,23 @@ come from the server when they enter their **Activation Code**.
 
 ---
 
-## How the customer sets it up
+## How it gets configured — two ways
+
+### A. We pre-configure it (headless — no browser, best for a Pi we ship)
+
+Drop the customer's Activation Card values into `/etc/thickness-agent/agent.env`
+(template: `agent.env.example`), then `sudo systemctl restart thickness-agent`.
+The agent validates with the server, pulls the customer name + mode, and starts
+uploading. The customer powers it on and does nothing.
+
+```ini
+DEVICE_ID=dev_xxxxxxxx
+DEVICE_KEY=<secret from provision>
+SENSORS=A=192.168.1.200,B=192.168.1.201
+SERVER_URL=http://194.164.148.145:8082
+```
+
+### B. The customer runs the setup wizard (self-service)
 
 1. Install the agent (service starts automatically, or run the binary).
 2. Open **http://localhost:7000** — the setup wizard.
@@ -50,25 +66,33 @@ device later: `UPDATE devices SET revoked=true WHERE device_id='dev_xxxxxxxx';`
 
 ---
 
-## Building the binary
+## Building the installer
 
-Build **on the target OS/arch** (PyInstaller does not cross-compile):
+Build **on the target architecture** (PyInstaller does not cross-compile).
 
-| Target | Command | Output |
-|---|---|---|
-| Raspberry Pi (ARM) | `./build.sh` on a Pi | `dist/thickness-agent` |
-| Linux x86_64 | `./build.sh` | `dist/thickness-agent` |
-| macOS | `./build.sh` | `dist/thickness-agent` |
-| Windows | `.\build.ps1` | `dist\thickness-agent.exe` |
+### Linux / Raspberry Pi — one command → a shippable `.deb` (recommended)
 
-### Install as a service
+```bash
+./build-deb.sh                 # -> thickness-agent_1.0.0_<arch>.deb
+```
 
-- **Linux / Raspberry Pi** — see the echoed steps in `build.sh` (copies the
-  binary to `/opt/thickness-agent`, installs `thickness-agent.service`,
-  `systemctl enable --now`).
-- **Windows** — use [NSSM](https://nssm.cc) (steps echoed by `build.ps1`) to run
-  `thickness-agent.exe` as an auto-start service.
-- **macOS** — wrap with a LaunchAgent plist (same binary).
+Run it on the same chip type as the customer machine: an x86_64 Linux PC produces
+an `amd64` package; a 64-bit Pi produces `arm64`; a 32-bit Pi produces `armhf`
+(the script auto-detects and stamps the architecture). The resulting `.deb`
+bundles the binary, the systemd service, and the install hooks, so on the
+customer machine it's just:
+
+```bash
+sudo dpkg -i thickness-agent_1.0.0_<arch>.deb   # service auto-starts on install + on boot
+```
+
+### Other platforms — bare binary
+
+| Target | Command | Output | Run as a service via |
+|---|---|---|---|
+| Windows | `.\build.ps1` | `dist\thickness-agent.exe` | [NSSM](https://nssm.cc) (steps echoed by `build.ps1`) |
+| macOS | `./build.sh` | `dist/thickness-agent` | a LaunchAgent plist |
+| Linux (binary only) | `./build.sh` | `dist/thickness-agent` | copy + `thickness-agent.service` |
 
 ---
 
