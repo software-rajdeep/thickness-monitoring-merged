@@ -4,6 +4,7 @@ import { ROLE_ACCESS } from "../../constants/roles";
 import AccessDenied from "../../components/AccessDenied";
 import Spinner from "../../components/Spinner";
 import { SERVER } from "../../constants/config_opposite";
+import { getDeviceId } from "../../constants/auth";
 
 export default function DownloadPage({ user, onToast }) {
   if (!ROLE_ACCESS[user.role]?.includes("download")) return <AccessDenied />;
@@ -13,9 +14,11 @@ export default function DownloadPage({ user, onToast }) {
   async function handleDl(type) {
     setDl(type);
     try {
-      const endpoint = type === "filtered"
+      const did = getDeviceId();
+      const q = did ? `?device_id=${encodeURIComponent(did)}` : "";
+      const endpoint = (type === "filtered"
         ? `${SERVER}/download/thickness`
-        : `${SERVER}/download/thickness/raw`;
+        : `${SERVER}/download/thickness/raw`) + q;
 
       const res = await fetch(endpoint, {
         method:  "GET",

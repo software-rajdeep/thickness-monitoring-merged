@@ -29,6 +29,7 @@ import OppSidebar from "./layout/opposite/Sidebar";
 
 import { SERVER, fetchSensorConfigs as fetchSbsConfigs } from "./constants/config";
 import { fetchSensorConfigs as fetchOppConfigs } from "./constants/config_opposite";
+import { fetchDevices, getDeviceId, setDeviceId, setToken } from "./constants/auth";
 
 export default function App() {
   const [sensorMode,  setSensorMode]  = useState(null); // null | "side-by-side" | "opposite"
@@ -53,6 +54,11 @@ export default function App() {
   // Mirror of thicknessLimit kept in a ref so updateThicknessLimit() can resolve
   // functional updaters and persist the result without a stale closure.
   const thicknessLimitRef = useRef(thicknessLimit);
+
+  // Multi-tenant: the device whose live stream / data this session is viewing.
+  const [devices, setDevices]               = useState([]);
+  const [selectedDevice, setSelectedDevice] = useState(null);
+  const selectedDeviceRef                   = useRef(null);
 
   const socketRef       = useRef(null);
   const counterRef      = useRef(1);
@@ -288,6 +294,9 @@ export default function App() {
     socket.on("connect", () => {
       setConnected(true);
       setLive(true);
+      // Subscribe only to the selected device's room (tenant isolation).
+      const did = selectedDeviceRef.current;
+      if (did) socket.emit("join_device", { device_id: did });
     });
 
     socket.on("disconnect", () => {
@@ -361,9 +370,41 @@ export default function App() {
   async function handleLogin(u) {
     setUser(u);
     setPage("dashboard");
+
+    // Load this user's devices and pick one to view. Prefer a previously chosen
+    // device if it is still visible, else the legacy device, else the first.
+    const list = await fetchDevices();
+    setDevices(list);
+    let did = null;
+    if (list.length) {
+      const prev = getDeviceId();
+      const ids = list.map(d => d.device_id);
+      did = (prev && ids.includes(prev)) ? prev
+          : (ids.includes("dev_legacy") ? "dev_legacy" : list[0].device_id);
+    }
+    selectedDeviceRef.current = did;
+    setSelectedDevice(did);
+    setDeviceId(did);
+
     // Calibration state and thickness limit are now global (shared across all users)
     await loadThicknessState();
     await loadThicknessLimit();
+  }
+
+  // Switch which device's live stream this session views. Reconnect the socket so
+  // it leaves the old room and joins the new one; clear the stale chart buffer.
+  function changeDevice(did) {
+    if (!did || did === selectedDeviceRef.current) return;
+    selectedDeviceRef.current = did;
+    setSelectedDevice(did);
+    setDeviceId(did);
+    setRows([]);
+    dataBufferRef.current = [];
+    counterRef.current = 1;
+    if (socketRef.current) {
+      disconnectSocket();
+      connectSocket();
+    }
   }
 
   async function handleLogout() {
@@ -371,6 +412,11 @@ export default function App() {
     // so it persists across sessions. Calibration state stays in the runtime.
 
     disconnectSocket();
+    setToken(null);
+    setDeviceId(null);
+    setDevices([]);
+    setSelectedDevice(null);
+    selectedDeviceRef.current = null;
     setUser(null);
     setPage("dashboard");
     setRows([]);
@@ -454,6 +500,41 @@ export default function App() {
   return (
     <div className="app-shell">
       <ActiveTopbar user={user} page={page} onLogout={handleBackToModeSelection} />
+
+      {selectedDevice && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "6px 18px",
+          background: "#0f172a", color: "#cbd5e1", fontSize: 13,
+          borderBottom: "1px solid #1e293b",
+        }}>
+          <span style={{ opacity: 0.7 }}>Device:</span>
+          {devices.length > 1 ? (
+            <select
+              value={selectedDevice}
+              onChange={e => changeDevice(e.target.value)}
+              style={{
+                background: "#1e293b", color: "#fff", border: "1px solid #334155",
+                borderRadius: 6, padding: "3px 8px",
+              }}
+            >
+              {devices.map(d => (
+                <option key={d.device_id} value={d.device_id}>
+                  {(d.customer_name ? d.customer_name + " — " : "") + (d.label || d.device_id)}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <strong style={{ color: "#fff" }}>
+              {(() => {
+                const d = devices.find(x => x.device_id === selectedDevice);
+                return d
+                  ? (d.customer_name ? d.customer_name + " — " : "") + (d.label || d.device_id)
+                  : selectedDevice;
+              })()}
+            </strong>
+          )}
+        </div>
+      )}
 
       {live && !sensorsOnline && (
         <div style={{

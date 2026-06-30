@@ -4,6 +4,7 @@ import { ROLE_ACCESS } from "../constants/roles";
 import AccessDenied from "../components/AccessDenied";
 import Spinner from "../components/Spinner";
 import { SERVER } from "../constants/config";
+import { getDeviceId } from "../constants/auth";
 
 export default function DownloadPage({ user, onToast }) {
   if (!ROLE_ACCESS[user.role]?.includes("download")) return <AccessDenied />;
@@ -17,10 +18,11 @@ export default function DownloadPage({ user, onToast }) {
         ? `${SERVER}/download/filtered`
         : `${SERVER}/download/raw`;
 
+      const did = getDeviceId();
       const res = await fetch(endpoint, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({}),
+        body:    JSON.stringify(did ? { device_id: did } : {}),
       });
 
       if (!res.ok) {

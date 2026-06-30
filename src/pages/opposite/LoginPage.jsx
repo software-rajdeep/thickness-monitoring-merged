@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Ic } from "../../icons/Icons";
 import Spinner from "../../components/Spinner";
 import { SERVER } from "../../constants/config_opposite";
+import { login } from "../../constants/auth";
 
 export default function LoginPage({ onLogin }) {
   const [u,           setU]           = useState("");
@@ -23,20 +24,16 @@ export default function LoginPage({ onLogin }) {
     setErr("");
 
     try {
-      const res  = await fetchWithTimeout(`${SERVER}/login`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ username: u, password: p }),
+      const usr = await login(u, p);
+      onLogin({
+        username: usr.username,
+        role: usr.role,
+        customer_id: usr.customer_id,
+        customer_name: usr.customer_name,
+        email: usr.email,
       });
-      const data = await res.json();
-
-      if (res.ok) {
-        onLogin({ username: data.username, role: data.role });
-      } else {
-        setErr(data.error || "Invalid username or password.");
-      }
-    } catch {
-      setErr("Network error — check backend host and port.");
+    } catch (e) {
+      setErr(e.message || "Invalid username or password.");
     }
 
     setLoading(false);
