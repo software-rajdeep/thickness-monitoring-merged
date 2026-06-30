@@ -4,6 +4,8 @@
  * Launches a full-screen BrowserWindow pointed at the Vercel-deployed frontend.
  * Detects network outages with a periodic ping and shows a professional
  * offline page. Automatically reloads the app when connectivity returns.
+ *
+ * This process does NOT manage or interact with pi_client.py.
  */
 
 import path from 'path';
@@ -11,12 +13,27 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ─── Load Electron's bundled ESM module ─────────────────────────────────────
-const asarPath = path.join(
-  __dirname, 'node_modules', 'electron',
-  'dist', 'resources', 'default_app.asar', 'main.js'
-);
-const { app, BrowserWindow, Menu, net, powerSaveBlocker } = await import(asarPath);
+// ─── Load Electron's built-in module ───────────────────────────────────────
+// Electron 33 bundles its built-in module as an ESM module at:
+//   node_modules/electron/dist/resources/default_app.asar/main.js
+// We import it directly via ESM import().
+let app, BrowserWindow, Menu, net, powerSaveBlocker;
+
+try {
+  const asarPath = path.join(
+    __dirname, 'node_modules', 'electron',
+    'dist', 'resources', 'default_app.asar', 'main.js'
+  );
+  const electron = await import(asarPath);
+  app = electron.app;
+  BrowserWindow = electron.BrowserWindow;
+  Menu = electron.Menu;
+  net = electron.net;
+  powerSaveBlocker = electron.powerSaveBlocker;
+} catch (err) {
+  console.error('[Electron] Fatal: Could not load module:', err.message);
+  process.exit(1);
+}
 
 const TARGET_URL = 'https://merged-version.vercel.app';
 const OFFLINE_FILE = path.join(__dirname, 'offline.html');
