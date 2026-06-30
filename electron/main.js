@@ -5,13 +5,7 @@
  * Detects network outages with a periodic ping and shows a professional
  * offline page. Automatically reloads the app when connectivity returns.
  *
- * This process does NOT manage or interact with pi_client.py in any way.
- * pi_client.py runs independently via the pi-merged-client systemd service.
- *
- * IMPORTANT: The npm 'electron' package's index.js returns a binary path
- * string, NOT the Electron API. We bypass this by modifying the npm
- * package entry point after installation (see fix-electron-require.js).
- * With the fix applied, require('electron') returns the real built-in module.
+ * This process does NOT manage or interact with pi_client.py.
  */
 
 const { app, BrowserWindow, Menu, net, powerSaveBlocker } = require('electron');
@@ -24,7 +18,6 @@ const OFFLINE_PING_MS = 3000;
 const PING_URL = 'https://clients3.google.com/generate_204';
 const PING_TIMEOUT = 4000;
 const IS_DEV = process.env.NODE_ENV === 'development';
-
 let mainWindow = null, pingTimer = null, isOnline = true;
 
 function checkConnectivity() {
@@ -53,11 +46,7 @@ function createWindow() {
   Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
     fullscreen: true, autoHideMenuBar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true,
-      devTools: IS_DEV,
-    },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: IS_DEV },
     show: false, backgroundColor: '#0f172a',
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());

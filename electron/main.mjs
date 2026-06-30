@@ -10,13 +10,14 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 // ─── Load Electron's built-in module ───────────────────────────────────────
-// Electron 33 bundles its built-in module as an ESM module at:
-//   node_modules/electron/dist/resources/default_app.asar/main.js
-// We import it directly via ESM import().
+// The npm 'electron' package shadows require('electron') with a string.
+// We bypass this by directly importing the ESM bundled module.
 let app, BrowserWindow, Menu, net, powerSaveBlocker;
 
 try {
@@ -31,7 +32,7 @@ try {
   net = electron.net;
   powerSaveBlocker = electron.powerSaveBlocker;
 } catch (err) {
-  console.error('[Electron] Fatal: Could not load module:', err.message);
+  console.error('[Electron] Fatal:', err.message);
   process.exit(1);
 }
 
@@ -42,7 +43,6 @@ const OFFLINE_PING_MS = 3000;
 const PING_URL = 'https://clients3.google.com/generate_204';
 const PING_TIMEOUT = 4000;
 const IS_DEV = process.env.NODE_ENV === 'development';
-
 let mainWindow = null, pingTimer = null, isOnline = true;
 
 function checkConnectivity() {
