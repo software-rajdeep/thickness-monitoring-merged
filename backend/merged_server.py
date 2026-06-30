@@ -12,12 +12,16 @@ import json
 import os
 import csv
 import io
+import re
+import secrets
+from functools import wraps
 from collections import deque
 from psycopg2 import extras
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask import Flask, request, jsonify, send_from_directory
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from flask import Flask, request, jsonify, send_from_directory, g
 # flask_cors removed — CORS handled exclusively by Traefik to avoid duplicate headers
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, join_room
 from flask import Response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +53,22 @@ LIMIT_FILTERED = 10_000_000
 LIMIT_UNFILTERED = 1_000_000
 LIMIT_THICKNESS = 10_000_000
 LIMIT_THICKNESS_RAW = 1_000_000
+
+# --- MULTI-TENANT (SaaS) ---
+# Per-device row cap (applies per device_id, not per table). ~3M rows ≈ 7 days at
+# 5 Hz. Env-overridable so we can raise it per deployment without a code change.
+PER_DEVICE_ROW_CAP = int(os.environ.get("PER_DEVICE_ROW_CAP", "3000000"))
+# Admin token guarding /provision (device minting). Override in the systemd unit.
+PROVISION_ADMIN_TOKEN = os.environ.get("PROVISION_ADMIN_TOKEN", "rajdeep-admin-2026")
+# device_id used for the original single-tenant install (legacy ingest path).
+LEGACY_DEVICE_ID = "dev_legacy"
+
+# --- AUTH (signed session tokens) ---
+# Secret signing key for login tokens. MUST be overridden in the systemd unit.
+AUTH_SECRET = os.environ.get("AUTH_SECRET", "dev-insecure-change-me")
+AUTH_TOKEN_TTL = int(os.environ.get("AUTH_TOKEN_TTL", str(7 * 24 * 3600)))  # 7 days
+# Password for the seeded superadmin on a FRESH database (generated if unset).
+SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD")
 
 # Moving-average window for the "filtered" tables. At 5 Hz, 10 samples ≈ 2 s of
 # smoothing. The unfiltered/raw tables always store the instantaneous value;
@@ -487,24 +507,18 @@ def init_db():
             ON {DB_TABLE_THICKNESS_RAW} (timestamp DESC)
         """)
 
-        # Create default users if table is empty
-        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_USERS}")
-        count = cur.fetchone()[0]
-        if count == 0:
-            default_users = [
-                ("superadmin", "superadmin123", "superadmin"),
-                ("admin",      "admin123",      "admin"),
-                ("supervisor", "super123",      "supervisor"),
-                ("worker",     "worker123",     "worker"),
-            ]
-            for uname, pwd, role in default_users:
-                pw_hash = generate_password_hash(pwd)
-                cur.execute(
-                    f"INSERT INTO {DB_TABLE_USERS} (username, password_hash, role) VALUES (%s, %s, %s)",
-                    (uname, pw_hash, role)
-                )
+        # Seed ONLY a superadmin on a fresh database. No shared weak defaults —
+        # each customer gets their own admin via /provision. Password comes from
+        # SUPERADMIN_PASSWORD env, or is generated and printed once.
+        cur.execute(f"SELECT COUNT(*) FROM {DB_TABLE_USERS} WHERE role='superadmin'")
+        if cur.fetchone()[0] == 0:
+            sa_pw = SUPERADMIN_PASSWORD or secrets.token_urlsafe(12)
+            cur.execute(
+                f"INSERT INTO {DB_TABLE_USERS} (username, password_hash, role) VALUES (%s, %s, %s)",
+                ("superadmin", generate_password_hash(sa_pw), "superadmin")
+            )
             conn.commit()
-            print("--- Created default users ---")
+            print(f"--- Created superadmin (password: {sa_pw}) ---")
 
         # Ensure id columns have sequences (migration for tables created without SERIAL default)
         for table, seq in [
@@ -977,7 +991,41 @@ def demo_login():
 @app.route('/ingest/readings', methods=['POST'])
 @app.route('/ingest/data', methods=['POST'])
 def ingest_data():
-    """Receive sensor data from Pi client."""
+    """Receive sensor data from an agent / Pi client.
+
+    Two paths:
+      • Multi-tenant: request carries X-Device-Id + X-Device-Key headers. The key
+        is validated against the devices table and the reading is processed and
+        stored tagged with that device_id (isolated per customer).
+      • Legacy single-tenant: no device headers — original behaviour, unchanged,
+        feeding the global stream loop (data is stored under dev_legacy).
+    """
+    data = request.json
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    # Normalize keys: accept sensor_A, sensor_B, sensor_C OR A, B, C
+    a = data.get("A") if "A" in data else data.get("sensor_A")
+    b = data.get("B") if "B" in data else data.get("sensor_B")
+    c = data.get("C") if "C" in data else data.get("sensor_C")
+    now = datetime.datetime.now()
+
+    # --- Multi-tenant device path ---
+    dev_id = request.headers.get('X-Device-Id')
+    if dev_id:
+        row = _verify_device(dev_id, request.headers.get('X-Device-Key'))
+        if not row:
+            return jsonify({"error": "Invalid device credentials"}), 401
+        if dev_id != LEGACY_DEVICE_ID:
+            af = float(a) if a is not None else None
+            bf = float(b) if b is not None else None
+            cf = float(c) if c is not None else None
+            _process_device_reading(dev_id, af, bf, cf, now)
+            _touch_last_seen(dev_id)
+            return jsonify({"message": "Data received", "device_id": dev_id,
+                            "timestamp": now.isoformat()}), 200
+        # dev_legacy posting with headers → fall through to the legacy pipeline.
+
+    # --- Legacy single-tenant path (original behaviour) ---
     auth_header = request.headers.get('Authorization', '')
     expected_token = f"Bearer {INGEST_API_KEY}"
     # Accept with or without Bearer prefix, and from any source (local proxy may strip)
@@ -987,14 +1035,6 @@ def ingest_data():
         # Also accept requests from localhost without auth (internal nginx proxy)
         if request.remote_addr not in ('127.0.0.1', '::1'):
             return jsonify({"error": "Unauthorized"}), 401
-    data = request.json
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    # Normalize keys: accept sensor_A, sensor_B, sensor_C OR A, B, C
-    a = data.get("A") if "A" in data else data.get("sensor_A")
-    b = data.get("B") if "B" in data else data.get("sensor_B")
-    c = data.get("C") if "C" in data else data.get("sensor_C")
-    now = datetime.datetime.now()
     last_ingest_reading["A"] = float(a) if a is not None else None
     last_ingest_reading["B"] = float(b) if b is not None else None
     last_ingest_reading["C"] = float(c) if c is not None else None
@@ -1020,6 +1060,341 @@ def sensors_status():
         "stale_seconds": round(age, 2) if last_ingest_monotonic > 0 else None,
         "sensors": per,
     }), 200
+
+
+# ==========================================
+# MULTI-TENANT: provisioning + agent activation
+# ==========================================
+@app.route('/provision', methods=['POST'])
+def provision_device():
+    """Admin-only. Mint a new customer (if needed) + device, returning a unique
+    device_id and one-time device_key. Only the key HASH is stored — the plaintext
+    key is shown here exactly once and put on the customer's activation card."""
+    if request.headers.get('X-Admin-Token', '') != PROVISION_ADMIN_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.json or {}
+    customer = (data.get("customer") or "").strip()
+    mode = (data.get("sensor_mode") or "opposite").strip().lower()
+    label = (data.get("label") or "").strip()
+    if not customer:
+        return jsonify({"error": "customer is required"}), 400
+    if mode not in ("opposite", "sbs"):
+        return jsonify({"error": "sensor_mode must be 'opposite' or 'sbs'"}), 400
+
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        cur.execute("INSERT INTO customers (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (customer,))
+        cur.execute("SELECT id FROM customers WHERE name=%s", (customer,))
+        cid = cur.fetchone()[0]
+        # Unique device_id (retry on the astronomically rare collision)
+        device_id = None
+        for _ in range(5):
+            cand = "dev_" + secrets.token_hex(4)
+            cur.execute("SELECT 1 FROM devices WHERE device_id=%s", (cand,))
+            if not cur.fetchone():
+                device_id = cand
+                break
+        if device_id is None:
+            conn.rollback()
+            return jsonify({"error": "Could not allocate device_id"}), 500
+        device_key = secrets.token_urlsafe(18)
+        key_hash = generate_password_hash(device_key)
+        cur.execute(
+            "INSERT INTO devices (device_id, customer_id, device_key_hash, sensor_mode, label) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (device_id, cid, key_hash, mode, label or None))
+
+        # First device for this customer → create their own admin login (no shared
+        # admin/admin123 ever). Returned once here for the activation card.
+        admin_info = None
+        cur.execute("SELECT COUNT(*) FROM users WHERE customer_id=%s", (cid,))
+        if cur.fetchone()[0] == 0:
+            slug = re.sub(r'[^a-z0-9]+', '', customer.lower())[:20] or "customer"
+            admin_email = (data.get("admin_email") or f"admin@{slug}.local").strip().lower()
+            admin_password = data.get("admin_password") or secrets.token_urlsafe(9)
+            cur.execute(
+                "INSERT INTO users (username, email, password_hash, role, customer_id) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                ("admin", admin_email, generate_password_hash(admin_password), "customer_admin", cid))
+            admin_info = {"admin_email": admin_email, "admin_password": admin_password}
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    resp = {
+        "device_id": device_id,
+        "device_key": device_key,
+        "customer": customer,
+        "sensor_mode": mode,
+        "label": label,
+    }
+    if admin_info:
+        resp.update(admin_info)
+    return jsonify(resp), 201
+
+
+@app.route('/agent/activate', methods=['POST'])
+def agent_activate():
+    """Called by the agent's setup wizard. Validates the activation code and
+    returns the customer details the agent needs (so the customer never types
+    their own company/mode — the server is the source of truth)."""
+    data = request.json or {}
+    device_id = (data.get("device_id") or "").strip()
+    device_key = (data.get("device_key") or "").strip()
+    row = _verify_device(device_id, device_key)
+    if not row:
+        return jsonify({"error": "Invalid or revoked activation code"}), 401
+
+    cname = None
+    conn, cur = _db_connect()
+    if conn is not None:
+        try:
+            cur.execute("SELECT name FROM customers WHERE id=%s", (row["customer_id"],))
+            r = cur.fetchone()
+            cname = r[0] if r else None
+            cur.execute("UPDATE devices SET last_seen=NOW() WHERE device_id=%s", (device_id,))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    mode = row["sensor_mode"]
+    labels = ["A", "B", "C"] if mode == "sbs" else ["A", "B"]
+    return jsonify({
+        "device_id": device_id,
+        "customer_name": cname,
+        "sensor_mode": mode,
+        "sensor_count": len(labels),
+        "sensor_labels": labels,
+        "label": row.get("label"),
+        "post_rate_hz": 5,
+    }), 200
+
+
+# ==========================================
+# AUTH: signed tokens + per-customer user management
+# ==========================================
+_token_serializer = URLSafeTimedSerializer(AUTH_SECRET, salt="auth-token")
+VALID_ROLES = ("superadmin", "customer_admin", "operator", "viewer")
+
+def issue_token(user):
+    return _token_serializer.dumps({"uid": user["id"], "cid": user["customer_id"], "role": user["role"]})
+
+def verify_token(tok):
+    try:
+        return _token_serializer.loads(tok, max_age=AUTH_TOKEN_TTL)
+    except (BadSignature, SignatureExpired, Exception):
+        return None
+
+def _bearer_token():
+    h = request.headers.get("Authorization", "")
+    return h[7:].strip() if h.startswith("Bearer ") else None
+
+def require_auth(roles=None):
+    """Gate an endpoint behind a valid token. superadmin always passes; otherwise
+    the token role must be in `roles` (if given). Sets g.auth = {uid, cid, role}."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            data = verify_token(_bearer_token() or "")
+            if not data:
+                return jsonify({"error": "Authentication required"}), 401
+            if roles and data.get("role") != "superadmin" and data.get("role") not in roles:
+                return jsonify({"error": "Forbidden"}), 403
+            g.auth = data
+            return fn(*a, **kw)
+        return wrapper
+    return deco
+
+def _customer_name(customer_id):
+    if not customer_id:
+        return None
+    conn, cur = _db_connect()
+    if conn is None:
+        return None
+    try:
+        cur.execute("SELECT name FROM customers WHERE id=%s", (customer_id,))
+        r = cur.fetchone()
+        return r[0] if r else None
+    finally:
+        conn.close()
+
+
+@app.route('/auth/login', methods=['POST'])
+def auth_login():
+    """Email (or username for superadmin) + password -> signed token + user info."""
+    data = request.json or {}
+    ident = (data.get("email") or data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not ident or not password:
+        return jsonify({"error": "email and password required"}), 400
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        cur.execute(
+            "SELECT id, username, email, password_hash, role, customer_id "
+            "FROM users WHERE lower(email)=lower(%s) OR username=%s LIMIT 1", (ident, ident))
+        r = cur.fetchone()
+    finally:
+        conn.close()
+    if not r or not check_password_hash(r[3], password):
+        return jsonify({"error": "Invalid credentials"}), 401
+    user = {"id": r[0], "username": r[1], "email": r[2], "role": r[4], "customer_id": r[5]}
+    user["customer_name"] = _customer_name(user["customer_id"])
+    return jsonify({"token": issue_token(user), "user": user}), 200
+
+
+@app.route('/auth/me', methods=['GET'])
+@require_auth()
+def auth_me():
+    return jsonify(g.auth), 200
+
+
+@app.route('/auth/users', methods=['GET'])
+@require_auth(roles=("customer_admin",))
+def auth_users_list():
+    a = g.auth
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        if a["role"] == "superadmin":
+            cur.execute("SELECT id, username, email, role, customer_id FROM users ORDER BY id")
+        else:
+            cur.execute("SELECT id, username, email, role, customer_id FROM users WHERE customer_id=%s ORDER BY id", (a["cid"],))
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return jsonify([{"id": r[0], "username": r[1], "email": r[2], "role": r[3], "customer_id": r[4]} for r in rows]), 200
+
+
+@app.route('/auth/users', methods=['POST'])
+@require_auth(roles=("customer_admin",))
+def auth_users_create():
+    a = g.auth
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+    password = (data.get("password") or "").strip()
+    role = (data.get("role") or "operator").strip()
+    username = (data.get("username") or (email.split("@")[0] if email else "")).strip()
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
+    if role not in VALID_ROLES:
+        return jsonify({"error": f"role must be one of {VALID_ROLES}"}), 400
+    # A customer_admin can only create within their own customer and not superadmins.
+    if a["role"] == "superadmin":
+        customer_id = data.get("customer_id", a["cid"])
+    else:
+        customer_id = a["cid"]
+        if role == "superadmin":
+            return jsonify({"error": "Forbidden role"}), 403
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        cur.execute(
+            "INSERT INTO users (username, email, password_hash, role, customer_id) "
+            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (username, email, generate_password_hash(password), role, customer_id))
+        uid = cur.fetchone()[0]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+    return jsonify({"id": uid, "username": username, "email": email, "role": role, "customer_id": customer_id}), 201
+
+
+def _assert_same_customer_or_404(cur, uid, auth):
+    cur.execute("SELECT customer_id, role FROM users WHERE id=%s", (uid,))
+    r = cur.fetchone()
+    if not r:
+        return None, (jsonify({"error": "not found"}), 404)
+    if auth["role"] != "superadmin" and r[0] != auth["cid"]:
+        return None, (jsonify({"error": "Forbidden"}), 403)
+    return r, None
+
+
+@app.route('/auth/users/<int:uid>', methods=['DELETE'])
+@require_auth(roles=("customer_admin",))
+def auth_users_delete(uid):
+    a = g.auth
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        r, err = _assert_same_customer_or_404(cur, uid, a)
+        if err:
+            return err
+        cur.execute("DELETE FROM users WHERE id=%s", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"deleted": uid}), 200
+
+
+@app.route('/auth/users/<int:uid>/password', methods=['POST'])
+@require_auth(roles=("customer_admin",))
+def auth_users_password(uid):
+    a = g.auth
+    pw = ((request.json or {}).get("password") or "").strip()
+    if not pw:
+        return jsonify({"error": "password required"}), 400
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        r, err = _assert_same_customer_or_404(cur, uid, a)
+        if err:
+            return err
+        cur.execute("UPDATE users SET password_hash=%s WHERE id=%s", (generate_password_hash(pw), uid))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"updated": uid}), 200
+
+
+@app.route('/auth/devices', methods=['GET'])
+@require_auth()
+def auth_devices():
+    """List devices visible to the caller. superadmin → all; others → own customer."""
+    a = g.auth
+    conn, cur = _db_connect()
+    if conn is None:
+        return jsonify({"error": "Database unavailable"}), 500
+    try:
+        base = ("SELECT d.device_id, d.label, d.sensor_mode, d.revoked, d.last_seen, c.name "
+                "FROM devices d LEFT JOIN customers c ON c.id=d.customer_id ")
+        if a["role"] == "superadmin":
+            cur.execute(base + "ORDER BY d.created_at")
+        else:
+            cur.execute(base + "WHERE d.customer_id=%s ORDER BY d.created_at", (a["cid"],))
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return jsonify([{
+        "device_id": r[0], "label": r[1], "sensor_mode": r[2], "revoked": r[3],
+        "last_seen": r[4].isoformat() if r[4] else None, "customer_name": r[5],
+    } for r in rows]), 200
+
+
+def _device_visible_to_auth(device_id, auth):
+    """True if the token's customer owns device_id (superadmin sees all)."""
+    if not auth:
+        return False
+    if auth.get("role") == "superadmin":
+        return True
+    row = _device_lookup(device_id)
+    return bool(row and row.get("customer_id") == auth.get("cid"))
+
 
 # ==========================================
 # APIS - CONFIG READ/WRITE (REST for CD22 sensor configuration)
@@ -1225,34 +1600,35 @@ def _compute_thickness(a, b, state):
     return None
 
 
-def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness):
+def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness, device_id=LEGACY_DEVICE_ID):
     """INSERT one reading into all four sensor tables, then commit.
 
     raw  -> unfiltered/raw tables (instantaneous values)
     filt -> filtered tables (moving-average values)
+    device_id -> tenant tag; defaults to the legacy single-tenant install.
     """
     ra, rb, rc = raw.get("A"), raw.get("B"), raw.get("C")
     fa, fb, fc = filt.get("A"), filt.get("B"), filt.get("C")
     # Filtered (moving-average) SBS table
     cur.execute(
-        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
-        (now, fa, fb, fc)
+        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
+        (now, fa, fb, fc, device_id)
     )
     # Unfiltered (raw) SBS table
     cur.execute(
-        f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c) VALUES (%s,%s,%s,%s)",
-        (now, ra, rb, rc)
+        f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
+        (now, ra, rb, rc, device_id)
     )
     if ra is not None and rb is not None:
         # Filtered opposite-thickness table (moving-average sensors + thickness)
         cur.execute(
-            f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
-            (now, fa, fb, filt_thickness)
+            f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
+            (now, fa, fb, filt_thickness, device_id)
         )
         # Raw opposite-thickness table (instantaneous sensors + thickness)
         cur.execute(
-            f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness) VALUES (%s,%s,%s,%s)",
-            (now, ra, rb, raw_thickness)
+            f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
+            (now, ra, rb, raw_thickness, device_id)
         )
     conn.commit()
 
@@ -1287,6 +1663,139 @@ def _emit_sensor_status(online):
         socketio.emit("sensor_status", {"online": bool(online)})
     except Exception:
         pass
+
+
+# ==========================================
+# MULTI-TENANT: device auth + per-device ingest pipeline
+# ==========================================
+_device_cache = {}            # device_id -> {"row": dict|None, "ts": monotonic}
+_DEVICE_CACHE_TTL = 30.0
+device_state = {}             # device_id -> {"windows":..., "thickness":..., "n":int}
+_device_last_seen_push = {}   # device_id -> monotonic (throttle last_seen UPDATE)
+
+def _device_lookup(device_id):
+    """Return device row dict from a short-lived cache or the DB; None if unknown."""
+    now = time.monotonic()
+    ent = _device_cache.get(device_id)
+    if ent and now - ent["ts"] < _DEVICE_CACHE_TTL:
+        return ent["row"]
+    conn, cur = _db_connect()
+    if conn is None:
+        return ent["row"] if ent else None
+    try:
+        cur.execute(
+            "SELECT device_id, customer_id, device_key_hash, sensor_mode, label, revoked "
+            "FROM devices WHERE device_id=%s", (device_id,))
+        r = cur.fetchone()
+    except Exception:
+        return ent["row"] if ent else None
+    finally:
+        conn.close()
+    row = None
+    if r:
+        row = {"device_id": r[0], "customer_id": r[1], "device_key_hash": r[2],
+               "sensor_mode": r[3], "label": r[4], "revoked": r[5]}
+    _device_cache[device_id] = {"row": row, "ts": now}
+    return row
+
+def _verify_device(device_id, device_key):
+    """Validate a device_id + key pair. Returns the device row or None."""
+    if not device_id or not device_key:
+        return None
+    row = _device_lookup(device_id)
+    if not row or row.get("revoked"):
+        return None
+    if not check_password_hash(row["device_key_hash"], device_key):
+        return None
+    return row
+
+def _get_device_state(device_id):
+    st = device_state.get(device_id)
+    if st is None:
+        st = {"windows": {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")},
+              "thickness": default_thickness_state(), "n": 0}
+        device_state[device_id] = st
+    return st
+
+def _touch_last_seen(device_id):
+    """Update devices.last_seen, throttled to once / 5 s per device."""
+    now = time.monotonic()
+    if now - _device_last_seen_push.get(device_id, 0.0) < 5.0:
+        return
+    _device_last_seen_push[device_id] = now
+    conn, cur = _db_connect()
+    if conn is None:
+        return
+    try:
+        cur.execute("UPDATE devices SET last_seen=NOW() WHERE device_id=%s", (device_id,))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+def _db_trim_device(cur, conn, device_id):
+    """Per-device row cap: never let one tenant evict another's history."""
+    for table in (DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW):
+        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE device_id=%s", (device_id,))
+        count = cur.fetchone()[0]
+        if count > PER_DEVICE_ROW_CAP:
+            excess = count - PER_DEVICE_ROW_CAP
+            cur.execute(
+                f"DELETE FROM {table} WHERE id IN "
+                f"(SELECT id FROM {table} WHERE device_id=%s ORDER BY id ASC LIMIT %s)",
+                (device_id, excess))
+    conn.commit()
+
+def _process_device_reading(device_id, a, b, c, now):
+    """Inline per-device pipeline for a provisioned device: moving-average filter,
+    thickness, DB write tagged with device_id, and emit to that device's room."""
+    st = _get_device_state(device_id)
+    reading = {"A": a, "B": b, "C": c}
+    filtered = {}
+    for sid in ("A", "B", "C"):
+        rv = reading.get(sid)
+        if rv is None:
+            filtered[sid] = None
+            continue
+        win = st["windows"][sid]
+        win.append(float(rv))
+        filtered[sid] = round(sum(win) / len(win), 3)
+
+    tstate = st["thickness"]
+    raw_thickness = _compute_thickness(a, b, tstate)
+    filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), tstate)
+
+    payload = {
+        "timestamp": now.isoformat(),
+        "device_id": device_id,
+        "distance_A": a, "distance_B": b, "distance_C": c,
+        "thickness": raw_thickness,
+    }
+    try:
+        socketio.emit("sensor_reading", payload, room=device_id)
+    except Exception:
+        pass
+
+    conn, cur = _db_connect()
+    if conn is not None:
+        try:
+            _db_write(conn, cur, now, reading, filtered, raw_thickness, filt_thickness, device_id=device_id)
+            st["n"] += 1
+            if st["n"] % 2000 == 0:   # trim ~every 2000 inserts (~7 min @ 5 Hz)
+                _db_trim_device(cur, conn, device_id)
+        except Exception as e:
+            print(f"[ingest dev {device_id}] DB error: {e}", flush=True)
+        finally:
+            conn.close()
+
+
+@socketio.on('join_device')
+def on_join_device(data):
+    """Dashboard subscribes to a single device's live readings."""
+    did = (data or {}).get('device_id')
+    if did:
+        join_room(did)
 
 
 def stream_ingest_loop():
@@ -1380,8 +1889,11 @@ def stream_ingest_loop():
                 "distance_B": reading.get("B"),
                 "distance_C": reading.get("C"),
                 "thickness": raw_thickness,
+                "device_id": LEGACY_DEVICE_ID,
             }
-            socketio.emit("sensor_reading", payload)
+            # Room-scoped so the multi-tenant dashboard only receives the device
+            # it joined. The legacy single install lives in the dev_legacy room.
+            socketio.emit("sensor_reading", payload, room=LEGACY_DEVICE_ID)
 
             # Write to DB; reconnect once on failure
             if db_conn is None:

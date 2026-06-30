@@ -19,6 +19,17 @@ DB_PASS = "rapl2026"
 def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS=None, DB_TABLE_THICKNESS_RAW=None):
     from flask import request, jsonify, Response, send_from_directory
 
+    def _device_filter():
+        """Read an optional device_id (query param or JSON body) and return a
+        (where_sql, params) pair to scope a CSV export to one tenant's device.
+        When absent, returns ('', ()) — i.e. no filtering (back-compat)."""
+        did = request.args.get("device_id")
+        if not did and request.is_json:
+            did = (request.get_json(silent=True) or {}).get("device_id")
+        if did:
+            return " WHERE device_id = %s", (did,)
+        return "", ()
+
     # ============================================================
     # Side-by-Side mode downloads
     # ============================================================
@@ -28,11 +39,12 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
+            where, params = _device_filter()
             cur.execute(f"""
                 SELECT id, timestamp, sensor_a, sensor_b, sensor_c
-                FROM {DB_TABLE_FILTERED}
+                FROM {DB_TABLE_FILTERED}{where}
                 ORDER BY timestamp ASC
-            """)
+            """, params)
             rows = cur.fetchall()
             rows = sorted(rows, key=lambda x: x[1])
             cur.close()
@@ -55,11 +67,12 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
+            where, params = _device_filter()
             cur.execute(f"""
                 SELECT id, timestamp, sensor_a, sensor_b, sensor_c
-                FROM {DB_TABLE_UNFILTERED}
+                FROM {DB_TABLE_UNFILTERED}{where}
                 ORDER BY timestamp ASC
-            """)
+            """, params)
             rows = cur.fetchall()
             rows = sorted(rows, key=lambda x: x[1])
             cur.close()
@@ -88,11 +101,12 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
+            where, params = _device_filter()
             cur.execute(f"""
                 SELECT id, timestamp, sensor_a, sensor_b, thickness
-                FROM {DB_TABLE_THICKNESS}
+                FROM {DB_TABLE_THICKNESS}{where}
                 ORDER BY timestamp ASC
-            """)
+            """, params)
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -116,11 +130,12 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
             cur  = conn.cursor()
+            where, params = _device_filter()
             cur.execute(f"""
                 SELECT id, timestamp, sensor_a, sensor_b, thickness
-                FROM {DB_TABLE_THICKNESS_RAW}
+                FROM {DB_TABLE_THICKNESS_RAW}{where}
                 ORDER BY timestamp ASC
-            """)
+            """, params)
             rows = cur.fetchall()
             cur.close()
             conn.close()
