@@ -1,0 +1,16 @@
+[Unit]
+Description=Thickness Agent (CD22 sensor reader + cloud uploader)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to the installed binary (PyInstaller onefile) or: /usr/bin/python3 /opt/thickness-agent/thickness_agent.py
+ExecStart=/opt/thickness-agent/thickness-agent
+Restart=always
+RestartSec=5
+# Config lives at /etc/thickness-agent/config.json (created by the setup wizard)
+Environment=THICKNESS_AGENT_CONFIG=/etc/thickness-agent/config.json
+
+[Install]
+WantedBy=multi-user.target
