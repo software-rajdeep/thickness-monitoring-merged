@@ -5,6 +5,7 @@ import { SERVER } from "../../constants/config_opposite";
 import { login } from "../../constants/auth";
 
 export default function LoginPage({ onLogin }) {
+  const [company,     setCompany]     = useState("");
   const [u,           setU]           = useState("");
   const [p,           setP]           = useState("");
   const [err,         setErr]         = useState("");
@@ -24,7 +25,7 @@ export default function LoginPage({ onLogin }) {
     setErr("");
 
     try {
-      const usr = await login(u, p);
+      const usr = await login(company, u, p);
       onLogin({
         username: usr.username,
         role: usr.role,
@@ -60,6 +61,21 @@ export default function LoginPage({ onLogin }) {
           </div>
         )}
 
+        {/* COMPANY */}
+        <div className="form-field">
+          <label className="form-label">Company</label>
+          <div className="input-wrap">
+            <Ic.User />
+            <input
+              value={company}
+              onChange={e => setCompany(e.target.value)}
+              placeholder="Your company name"
+              onKeyDown={e => e.key === "Enter" && handleLogin()}
+              autoFocus
+            />
+          </div>
+        </div>
+
         {/* USERNAME */}
         <div className="form-field">
           <label className="form-label">Username</label>
@@ -70,7 +86,6 @@ export default function LoginPage({ onLogin }) {
               onChange={e => setU(e.target.value)}
               placeholder="Enter username"
               onKeyDown={e => e.key === "Enter" && handleLogin()}
-              autoFocus
             />
           </div>
         </div>

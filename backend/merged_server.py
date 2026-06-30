@@ -1093,19 +1093,22 @@ def provision_device():
             "VALUES (%s,%s,%s,%s,%s)",
             (device_id, cid, key_hash, mode, label or None))
 
-        # First device for this customer → create their own admin login (no shared
-        # admin/admin123 ever). Returned once here for the activation card.
+        # First device for this customer → create their own company SUPERADMIN login
+        # (no shared admin/admin123 ever). They log in with company + username +
+        # password. Credentials returned once here for the activation card.
         admin_info = None
         cur.execute("SELECT COUNT(*) FROM users WHERE customer_id=%s", (cid,))
         if cur.fetchone()[0] == 0:
             slug = re.sub(r'[^a-z0-9]+', '', customer.lower())[:20] or "customer"
+            admin_username = (data.get("admin_username") or "admin").strip()
             admin_email = (data.get("admin_email") or f"admin@{slug}.local").strip().lower()
             admin_password = data.get("admin_password") or secrets.token_urlsafe(9)
             cur.execute(
                 "INSERT INTO users (username, email, password_hash, role, customer_id) "
                 "VALUES (%s,%s,%s,%s,%s)",
-                ("admin", admin_email, generate_password_hash(admin_password), "customer_admin", cid))
-            admin_info = {"admin_email": admin_email, "admin_password": admin_password}
+                (admin_username, admin_email, generate_password_hash(admin_password), "superadmin", cid))
+            admin_info = {"admin_username": admin_username, "admin_email": admin_email,
+                          "admin_password": admin_password, "company": customer}
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -1168,7 +1171,14 @@ def agent_activate():
 # AUTH: signed tokens + per-customer user management
 # ==========================================
 _token_serializer = URLSafeTimedSerializer(AUTH_SECRET, salt="auth-token")
-VALID_ROLES = ("superadmin", "customer_admin", "operator", "viewer")
+VALID_ROLES = ("superadmin", "admin", "supervisor", "worker")
+
+def _is_global(auth):
+    """A 'global' (Rajdeep) account has NO customer (customer_id IS NULL) and can
+    see/manage every customer. A company superadmin has role 'superadmin' but a
+    customer_id set, so it must NEVER be treated as global — tenant isolation keys
+    off customer_id, not the role name."""
+    return auth is not None and auth.get("cid") is None
 
 def issue_token(user):
     return _token_serializer.dumps({"uid": user["id"], "cid": user["customer_id"], "role": user["role"]})
@@ -1215,19 +1225,44 @@ def _customer_name(customer_id):
 
 @app.route('/auth/login', methods=['POST'])
 def auth_login():
-    """Email (or username for superadmin) + password -> signed token + user info."""
+    """Company + username + password -> signed token + user info.
+
+    Each company has its own users (usernames are unique only WITHIN a company),
+    so the company name disambiguates which user to authenticate. A blank company
+    means a GLOBAL (Rajdeep) account (customer_id IS NULL) — e.g. the global
+    superadmin — which may log in by username or email.
+    """
     data = request.json or {}
-    ident = (data.get("email") or data.get("username") or "").strip()
+    company  = (data.get("company") or "").strip()
+    username = (data.get("username") or "").strip()
     password = data.get("password") or ""
+    # Back-compat: some callers may still send only an email/identifier.
+    ident = username or (data.get("email") or "").strip()
     if not ident or not password:
-        return jsonify({"error": "email and password required"}), 400
+        return jsonify({"error": "username and password required"}), 400
     conn, cur = _db_connect()
     if conn is None:
         return jsonify({"error": "Database unavailable"}), 500
     try:
-        cur.execute(
-            "SELECT id, username, email, password_hash, role, customer_id "
-            "FROM users WHERE lower(email)=lower(%s) OR username=%s LIMIT 1", (ident, ident))
+        if company:
+            # Resolve the company, then match the username within THAT company only.
+            cur.execute("SELECT id FROM customers WHERE lower(name)=lower(%s)", (company,))
+            crow = cur.fetchone()
+            if not crow:
+                return jsonify({"error": "Invalid credentials"}), 401
+            cur.execute(
+                "SELECT id, username, email, password_hash, role, customer_id "
+                "FROM users WHERE customer_id=%s AND (username=%s OR lower(email)=lower(%s)) LIMIT 1",
+                (crow[0], username, ident))
+        else:
+            # No company → global (Rajdeep) account by username, with a unique-email
+            # fallback for back-compat (old single-field frontend / direct API callers
+            # during the deploy window). Email is unique, so no cross-tenant ambiguity.
+            cur.execute(
+                "SELECT id, username, email, password_hash, role, customer_id "
+                "FROM users WHERE (customer_id IS NULL AND username=%s) OR lower(email)=lower(%s) "
+                "ORDER BY (customer_id IS NULL) DESC LIMIT 1",
+                (username, ident))
         r = cur.fetchone()
     finally:
         conn.close()
@@ -1245,14 +1280,14 @@ def auth_me():
 
 
 @app.route('/auth/users', methods=['GET'])
-@require_auth(roles=("customer_admin",))
+@require_auth(roles=("admin",))
 def auth_users_list():
     a = g.auth
     conn, cur = _db_connect()
     if conn is None:
         return jsonify({"error": "Database unavailable"}), 500
     try:
-        if a["role"] == "superadmin":
+        if _is_global(a):
             cur.execute("SELECT id, username, email, role, customer_id FROM users ORDER BY id")
         else:
             cur.execute("SELECT id, username, email, role, customer_id FROM users WHERE customer_id=%s ORDER BY id", (a["cid"],))
@@ -1263,25 +1298,24 @@ def auth_users_list():
 
 
 @app.route('/auth/users', methods=['POST'])
-@require_auth(roles=("customer_admin",))
+@require_auth(roles=("admin",))
 def auth_users_create():
     a = g.auth
     data = request.json or {}
     email = (data.get("email") or "").strip().lower()
     password = (data.get("password") or "").strip()
-    role = (data.get("role") or "operator").strip()
+    role = (data.get("role") or "worker").strip()
     username = (data.get("username") or (email.split("@")[0] if email else "")).strip()
     if not email or not password:
         return jsonify({"error": "email and password required"}), 400
     if role not in VALID_ROLES:
         return jsonify({"error": f"role must be one of {VALID_ROLES}"}), 400
-    # A customer_admin can only create within their own customer and not superadmins.
-    if a["role"] == "superadmin":
+    # Only a global (Rajdeep) account may create users in an arbitrary customer.
+    # A company superadmin can only create users WITHIN their own company.
+    if _is_global(a):
         customer_id = data.get("customer_id", a["cid"])
     else:
         customer_id = a["cid"]
-        if role == "superadmin":
-            return jsonify({"error": "Forbidden role"}), 403
     conn, cur = _db_connect()
     if conn is None:
         return jsonify({"error": "Database unavailable"}), 500
@@ -1305,13 +1339,13 @@ def _assert_same_customer_or_404(cur, uid, auth):
     r = cur.fetchone()
     if not r:
         return None, (jsonify({"error": "not found"}), 404)
-    if auth["role"] != "superadmin" and r[0] != auth["cid"]:
+    if not _is_global(auth) and r[0] != auth["cid"]:
         return None, (jsonify({"error": "Forbidden"}), 403)
     return r, None
 
 
 @app.route('/auth/users/<int:uid>', methods=['DELETE'])
-@require_auth(roles=("customer_admin",))
+@require_auth(roles=("admin",))
 def auth_users_delete(uid):
     a = g.auth
     conn, cur = _db_connect()
@@ -1329,7 +1363,7 @@ def auth_users_delete(uid):
 
 
 @app.route('/auth/users/<int:uid>/password', methods=['POST'])
-@require_auth(roles=("customer_admin",))
+@require_auth(roles=("admin",))
 def auth_users_password(uid):
     a = g.auth
     pw = ((request.json or {}).get("password") or "").strip()
@@ -1360,7 +1394,7 @@ def auth_devices():
     try:
         base = ("SELECT d.device_id, d.label, d.sensor_mode, d.revoked, d.last_seen, c.name "
                 "FROM devices d LEFT JOIN customers c ON c.id=d.customer_id ")
-        if a["role"] == "superadmin":
+        if _is_global(a):
             cur.execute(base + "ORDER BY d.created_at")
         else:
             cur.execute(base + "WHERE d.customer_id=%s ORDER BY d.created_at", (a["cid"],))
@@ -1377,7 +1411,7 @@ def _device_visible_to_auth(device_id, auth):
     """True if the token's customer owns device_id (superadmin sees all)."""
     if not auth:
         return False
-    if auth.get("role") == "superadmin":
+    if _is_global(auth):
         return True
     row = _device_lookup(device_id)
     return bool(row and row.get("customer_id") == auth.get("cid"))

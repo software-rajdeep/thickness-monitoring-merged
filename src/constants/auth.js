@@ -22,12 +22,13 @@ export function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-// Log in with email (or username for superadmin) + password. Stores the token.
-export async function login(identifier, password) {
+// Log in with company + username + password. Stores the token.
+// Leave `company` blank for a global (Rajdeep) account such as the global superadmin.
+export async function login(company, username, password) {
   const res = await fetch(`${SERVER}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: identifier, username: identifier, password }),
+    body: JSON.stringify({ company, username, password }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Invalid credentials");
