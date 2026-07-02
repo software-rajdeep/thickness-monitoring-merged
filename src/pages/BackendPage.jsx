@@ -3,6 +3,7 @@ import { Ic } from "../icons/Icons";
 import { ROLE_ACCESS, ROLE_COLOR } from "../constants/roles";
 import AccessDenied from "../components/AccessDenied";
 import Spinner from "../components/Spinner";
+import { authHeaders } from "../constants/auth";
 import { SERVER, DEFAULT_SERVER, setServerBase } from "../constants/config";
 
 export default function BackendPage({ user }) {
@@ -45,7 +46,7 @@ export default function BackendPage({ user }) {
 
   async function fetchUsers() {
     try {
-      const res  = await fetch(`${SERVER}/users`);
+      const res  = await fetch(`${SERVER}/auth/users`, { headers: authHeaders() });
       const data = await res.json();
       setUsers(data);
     } catch {
@@ -56,7 +57,7 @@ export default function BackendPage({ user }) {
 
   async function fetchDbStatus() {
     try {
-      const res  = await fetch(`${SERVER}/db/status`);
+      const res  = await fetch(`${SERVER}/db/status`, { headers: authHeaders() });
       const data = await res.json();
       setDbStatus(data);
     } catch {
@@ -93,9 +94,9 @@ export default function BackendPage({ user }) {
     }
     setAdding(true);
     try {
-      const res  = await fetch(`${SERVER}/users`, {
+      const res  = await fetch(`${SERVER}/auth/users`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body:    JSON.stringify({ username, password, role }),
       });
       const data = await res.json();
@@ -120,7 +121,7 @@ export default function BackendPage({ user }) {
     }
     setDeleting(id);
     try {
-      const res  = await fetch(`${SERVER}/users/${id}`, { method: "DELETE" });
+      const res  = await fetch(`${SERVER}/auth/users/${id}`, { method: "DELETE", headers: authHeaders() });
       const data = await res.json();
       if (res.ok) {
         showToast(`User '${username}' deleted`, "success");

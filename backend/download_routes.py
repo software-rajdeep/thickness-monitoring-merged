@@ -16,25 +16,44 @@ DB_USER = "rapl"
 DB_PASS = "rapl2026"
 
 
-def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS=None, DB_TABLE_THICKNESS_RAW=None):
-    from flask import request, jsonify, Response, send_from_directory
+def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS=None, DB_TABLE_THICKNESS_RAW=None,
+                             require_auth=None):
+    from flask import request, jsonify, Response, send_from_directory, g
+
+    if require_auth is None:
+        # Fallback no-op gate (local dev without the auth layer).
+        def require_auth(roles=None):
+            def deco(fn):
+                return fn
+            return deco
 
     def _device_filter():
-        """Read an optional device_id (query param or JSON body) and return a
-        (where_sql, params) pair to scope a CSV export to one tenant's device.
-        When absent, returns ('', ()) — i.e. no filtering (back-compat)."""
+        """Return a (where_sql, params) pair scoping a CSV export to the
+        caller's tenant. Global (Rajdeep) accounts: optional device_id filter,
+        no filter = everything. Customer accounts: a requested device_id must
+        belong to them; with no device_id the export covers all THEIR devices."""
         did = request.args.get("device_id")
         if not did and request.is_json:
             did = (request.get_json(silent=True) or {}).get("device_id")
+        auth = getattr(g, "auth", None)
+        cid = auth.get("cid") if auth else None
+        if cid is None:
+            # Global account (or ungated local dev): honour device_id if given.
+            if did:
+                return " WHERE device_id = %s", (did,)
+            return "", ()
         if did:
-            return " WHERE device_id = %s", (did,)
-        return "", ()
+            return (" WHERE device_id = %s AND device_id IN "
+                    "(SELECT device_id FROM devices WHERE customer_id = %s)", (did, cid))
+        return (" WHERE device_id IN "
+                "(SELECT device_id FROM devices WHERE customer_id = %s)", (cid,))
 
     # ============================================================
     # Side-by-Side mode downloads
     # ============================================================
 
     @app.route('/download/filtered', methods=['POST'])
+    @require_auth()
     def download_filtered():
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
@@ -63,6 +82,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             return jsonify({"error": str(e)}), 500
 
     @app.route('/download/raw', methods=['POST'])
+    @require_auth()
     def download_raw():
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
@@ -95,6 +115,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
     # ============================================================
 
     @app.route('/download/thickness', methods=['GET'])
+    @require_auth()
     def download_thickness():
         if DB_TABLE_THICKNESS is None:
             return jsonify({"error": "Thickness table not configured"}), 400
@@ -124,6 +145,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             return jsonify({"error": str(e)}), 500
 
     @app.route('/download/thickness/raw', methods=['GET'])
+    @require_auth()
     def download_thickness_raw():
         if DB_TABLE_THICKNESS_RAW is None:
             return jsonify({"error": "Thickness raw table not configured"}), 400
@@ -153,6 +175,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             return jsonify({"error": str(e)}), 500
 
     @app.route('/db/status', methods=['GET'])
+    @require_auth()
     def db_status():
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
