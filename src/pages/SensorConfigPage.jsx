@@ -3,6 +3,7 @@ import { Ic } from "../icons/Icons";
 import { ROLE_ACCESS } from "../constants/roles";
 import AccessDenied from "../components/AccessDenied";
 import Spinner from "../components/Spinner";
+import { authHeaders } from "../constants/auth";
 import { SERVER } from "../constants/config";
 
 const REG = {
@@ -56,7 +57,7 @@ export default function SensorConfigPage({ user, onToast }) {
   // ── LOAD CONFIG ──────────────────────────────────────────────────────────
   async function loadConfig() {
     try {
-      const res = await fetch(`${SERVER}/config/file`);
+      const res = await fetch(`${SERVER}/config/file`, { headers: authHeaders() });
       if (!res.ok) { addLog("Could not fetch config file", "err"); return; }
       const cfg = await res.json();
 
@@ -98,7 +99,7 @@ export default function SensorConfigPage({ user, onToast }) {
   async function writeOneHW(sid, addr_h, addr_l, val_l) {
     const res = await fetch(`${SERVER}/config/write`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body:    JSON.stringify({ sensor: sid, addr_h, addr_l, val_h: "0x00", val_l }),
     });
     return res.json();
@@ -106,7 +107,7 @@ export default function SensorConfigPage({ user, onToast }) {
 
   // ── UPDATE JSON FILE FOR ALL SENSORS ─────────────────────────────────────
   async function updateAllJSON(spIdx, avIdx, opIdx, alIdx) {
-    const getRes = await fetch(`${SERVER}/config/file`);
+    const getRes = await fetch(`${SERVER}/config/file`, { headers: authHeaders() });
     const cfg    = await getRes.json();
     for (const sid of SENSOR_IDS) {
       const key = `sensor_${sid}`;
@@ -118,7 +119,7 @@ export default function SensorConfigPage({ user, onToast }) {
     }
     await fetch(`${SERVER}/config/file`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body:    JSON.stringify(cfg),
     });
   }
@@ -179,7 +180,7 @@ export default function SensorConfigPage({ user, onToast }) {
       const hz  = parseFloat(streamRate);
       const res = await fetch(`${SERVER}/stream/config`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body:    JSON.stringify({ rate: hz }),
       });
       const d = await res.json();
@@ -202,18 +203,18 @@ export default function SensorConfigPage({ user, onToast }) {
     try {
       const res  = await fetch(`${SERVER}/stream/config`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body:    JSON.stringify({ rate: hz }),
       });
       const data = await res.json();
       if (data.message) {
         addLog(`[GLOBAL] ✓ Stream Rate = ${hz} Hz`, "ok");
-        const getRes = await fetch(`${SERVER}/config/file`);
+        const getRes = await fetch(`${SERVER}/config/file`, { headers: authHeaders() });
         const cfg    = await getRes.json();
         cfg.global_settings.stream_rate_hz = hz;
         await fetch(`${SERVER}/config/file`, {
           method:  "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body:    JSON.stringify(cfg),
         });
         onToast(`Stream rate set to ${hz} Hz`, "success");

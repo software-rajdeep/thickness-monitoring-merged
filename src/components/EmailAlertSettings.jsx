@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { SERVER } from "../constants/config_opposite";
+import { authHeaders } from "../constants/auth";
 
 /* ── Mini toggle switch component ── */
 function Toggle({ checked, onChange, label }) {
@@ -44,7 +45,7 @@ export default function EmailAlertSettings({ onClose }) {
   useEffect(() => {
     async function load() {
       try {
-        const configRes = await fetch(`${SERVER}/email-alerts/config`);
+        const configRes = await fetch(`${SERVER}/email-alerts/config`, { headers: authHeaders() });
         if (configRes.ok) {
           const data = await configRes.json();
           setConfig(data);
@@ -75,11 +76,11 @@ export default function EmailAlertSettings({ onClose }) {
     try {
       const res = await fetch(`${SERVER}/email-alerts/config`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(updated),
       });
       if (res.ok) {
-        const configRes = await fetch(`${SERVER}/email-alerts/config`);
+        const configRes = await fetch(`${SERVER}/email-alerts/config`, { headers: authHeaders() });
         if (configRes.ok) setConfig(await configRes.json());
       }
     } catch (err) {
@@ -95,11 +96,11 @@ export default function EmailAlertSettings({ onClose }) {
     try {
       const res = await fetch(`${SERVER}/email-alerts/threshold-limits`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ threshold_limits: updated }),
       });
       if (res.ok) {
-        const configRes = await fetch(`${SERVER}/email-alerts/config`);
+        const configRes = await fetch(`${SERVER}/email-alerts/config`, { headers: authHeaders() });
         if (configRes.ok) setConfig(await configRes.json());
       }
     } catch (err) {
@@ -132,6 +133,7 @@ export default function EmailAlertSettings({ onClose }) {
     try {
       const res = await fetch(`${SERVER}/email-alerts/test`, {
         method: "POST",
+        headers: authHeaders(),
       });
       const data = await res.json();
       if (res.ok) {
@@ -153,7 +155,7 @@ export default function EmailAlertSettings({ onClose }) {
     setOauthStatus("loading");
     setOauthMsg("Opening Google sign-in...");
     try {
-      const res = await fetch(`${SERVER}/email-alerts/auth-url`);
+      const res = await fetch(`${SERVER}/email-alerts/auth-url`, { headers: authHeaders() });
       const data = await res.json();
       if (res.ok && data.auth_url) {
         const width = 500;
@@ -172,7 +174,7 @@ export default function EmailAlertSettings({ onClose }) {
         const checkInterval = setInterval(async () => {
           attempts++;
           try {
-            const configRes = await fetch(`${SERVER}/email-alerts/config`);
+            const configRes = await fetch(`${SERVER}/email-alerts/config`, { headers: authHeaders() });
             if (configRes.ok) {
               const cfg = await configRes.json();
               if (cfg.gmail_authenticated) {

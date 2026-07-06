@@ -29,7 +29,7 @@ import OppSidebar from "./layout/opposite/Sidebar";
 
 import { SERVER, fetchSensorConfigs as fetchSbsConfigs } from "./constants/config";
 import { fetchSensorConfigs as fetchOppConfigs } from "./constants/config_opposite";
-import { fetchDevices, getDeviceId, setDeviceId, setToken } from "./constants/auth";
+import { fetchDevices, getDeviceId, setDeviceId, setToken, authHeaders } from "./constants/auth";
 
 export default function App() {
   const [sensorMode,  setSensorMode]  = useState(null); // null | "side-by-side" | "opposite"
@@ -91,7 +91,7 @@ export default function App() {
 
   async function loadThicknessState() {
     try {
-      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`);
+      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`, { headers: authHeaders() });
       if (!response.ok) return;
       const data = await response.json();
       setThicknessState(data);
@@ -102,7 +102,7 @@ export default function App() {
 
   async function refreshThicknessState() {
     try {
-      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`);
+      const response = await fetch(`${SERVER}/thickness/state${deviceQuery()}`, { headers: authHeaders() });
       if (!response.ok) return null;
       const data = await response.json();
       setThicknessState(data);
@@ -115,7 +115,7 @@ export default function App() {
   // Load the GLOBAL thickness limit from the server (shared across all users).
   async function loadThicknessLimit() {
     try {
-      const response = await fetch(`${SERVER}/thickness/limit`);
+      const response = await fetch(`${SERVER}/thickness/limit`, { headers: authHeaders() });
       if (!response.ok) return;
       const data = await response.json();
       const next = {
@@ -143,7 +143,7 @@ export default function App() {
     // server copy just makes it survive logout / login-as-another-user.
     fetch(`${SERVER}/thickness/limit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(next),
     }).catch(() => {});
   }
@@ -154,7 +154,7 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/calibration`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           reference_thickness: referenceThickness,
           username: user?.username,
@@ -185,7 +185,7 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ username: user?.username, device_id: selectedDeviceRef.current }),
       });
       const data = await response.json();
@@ -212,7 +212,7 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/auto-gap`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           object_thickness: objectThickness,
           thickness_tolerance_min: toleranceMin || null,
@@ -244,7 +244,7 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/gap`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           gap_distance: gapDistance,
           username: user?.username,
@@ -274,7 +274,7 @@ export default function App() {
     try {
       const response = await fetch(`${SERVER}/thickness/calibration/reset`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ username: user?.username, device_id: selectedDeviceRef.current }),
       });
       const data = await response.json();

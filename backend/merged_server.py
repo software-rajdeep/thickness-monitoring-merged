@@ -609,13 +609,11 @@ class CD22Sensor:
 # ==========================================
 app = Flask(__name__)
 
-# Register user management routes
-from user_routes import register_user_routes
-register_user_routes(app)
+# Legacy unauthenticated /users routes (user_routes.py) are NO LONGER registered:
+# user management now goes through the token-gated, customer-scoped /auth/users.
 
-# Register download routes
-from download_routes import register_download_routes
-register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW)
+# Download routes are registered further down, after require_auth is defined,
+# so the CSV exports can be token-gated and tenant-scoped.
 
 # Register email alert routes
 from email_alert_routes import email_alerts_bp, check_thresholds_and_alert
@@ -653,6 +651,48 @@ _last_status_emit_mono = 0.0
 _last_status_online = None
 
 # ==========================================
+# AUTH GATE (defined early so route decorators below can use it; the token
+# helpers it calls — verify_token / _bearer_token — are defined later in the
+# auth section and resolve at request time, not at decoration time)
+# ==========================================
+def require_auth(roles=None):
+    """Gate an endpoint behind a valid token. superadmin always passes; otherwise
+    the token role must be in `roles` (if given). Sets g.auth = {uid, cid, role}."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            data = verify_token(_bearer_token() or "")
+            if not data:
+                return jsonify({"error": "Authentication required"}), 401
+            if roles and data.get("role") != "superadmin" and data.get("role") not in roles:
+                return jsonify({"error": "Forbidden"}), 403
+            g.auth = data
+            return fn(*a, **kw)
+        return wrapper
+    return deco
+
+# Register CSV download routes now that require_auth exists — every export is
+# token-gated and scoped to the caller's customer inside download_routes.py.
+from download_routes import register_download_routes
+register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW,
+                         require_auth=require_auth)
+
+@app.before_request
+def _gate_email_alert_routes():
+    """Token-gate the email-alert blueprint (admin only). The OAuth callback
+    stays public — Google redirects the browser there without our token."""
+    path = request.path
+    if not path.startswith('/email-alerts') or path == '/email-alerts/oauth-callback':
+        return None
+    data = verify_token(_bearer_token() or "")
+    if not data:
+        return jsonify({"error": "Authentication required"}), 401
+    if data.get("role") not in ("superadmin", "admin"):
+        return jsonify({"error": "Forbidden"}), 403
+    g.auth = data
+    return None
+
+# ==========================================
 # APIS - SERVER CONFIG (missing endpoint that frontends expect)
 # ==========================================
 @app.route('/server/config', methods=['GET'])
@@ -683,6 +723,7 @@ def get_server_config():
 # APIS - NETWORK CONFIG (used by sensor_setup.html)
 # ==========================================
 @app.route('/config/network', methods=['GET', 'POST'])
+@require_auth(roles=("admin",))
 def handle_network_config():
     """GET: return current sensor_network.json config.
        POST: save new network config and activate sensors."""
@@ -711,6 +752,7 @@ def handle_network_config():
 # APIS - CONFIG FILE SYNC
 # ==========================================
 @app.route('/config/file', methods=['GET', 'POST'])
+@require_auth(roles=("admin",))
 def handle_config_file():
     if request.method == 'GET':
         try:
@@ -745,6 +787,11 @@ def _thickness_ctx():
     if not did and request.is_json:
         did = (request.get_json(silent=True) or {}).get("device_id")
     if did and did != LEGACY_DEVICE_ID:
+        # Tenant isolation: the caller's token must own this device.
+        auth = getattr(g, "auth", None)
+        if auth is not None and not _device_visible_to_auth(did, auth):
+            from flask import abort
+            abort(403)
         st = _get_device_state(did)
         def getter():
             return st["thickness"]
@@ -757,11 +804,13 @@ def _thickness_ctx():
 
 
 @app.route('/thickness/state', methods=['GET'])
+@require_auth()
 def thickness_state_api():
     _did, getter, _setter, _latest = _thickness_ctx()
     return jsonify(getter()), 200
 
 @app.route('/thickness/limit', methods=['GET', 'POST'])
+@require_auth()
 def thickness_limit_api():
     """Global thickness limit, shared across all users and sessions.
 
@@ -782,6 +831,7 @@ def thickness_limit_api():
     return jsonify({"message": "Thickness limit saved.", **limit}), 200
 
 @app.route('/thickness/setup-ready', methods=['POST'])
+@require_auth()
 def thickness_setup_ready():
     _did, getter, setter, latest = _thickness_ctx()
     reading = {k: v for k, v in latest.items() if v is not None}
@@ -802,6 +852,7 @@ def thickness_setup_ready():
     }), 200
 
 @app.route('/thickness/calibration', methods=['POST'])
+@require_auth()
 def thickness_calibration():
     _did, getter, setter, latest = _thickness_ctx()
     data = request.json or {}
@@ -836,6 +887,7 @@ def thickness_calibration():
     }), 200
 
 @app.route('/thickness/gap', methods=['POST'])
+@require_auth()
 def thickness_gap_set():
     """Set the distance between the two sensor faces (opposite mode)."""
     _did, getter, setter, _latest = _thickness_ctx()
@@ -859,6 +911,7 @@ def thickness_gap_set():
     }), 200
 
 @app.route('/thickness/auto-gap', methods=['POST'])
+@require_auth()
 def thickness_auto_gap_set():
     """Auto-calculate gap distance using object thickness (opposite mode)."""
     _did, getter, setter, latest = _thickness_ctx()
@@ -905,6 +958,7 @@ def thickness_auto_gap_set():
     }), 200
 
 @app.route('/thickness/calibration/reset', methods=['POST'])
+@require_auth()
 def thickness_calibration_reset():
     _did, getter, setter, _latest = _thickness_ctx()
     current_state = getter()
@@ -951,26 +1005,6 @@ def login():
     except Exception as e:
         print(f"Login DB Error: {e}")
         return jsonify({"error": "Internal server error connecting to database"}), 500
-
-@app.route('/login/demo', methods=['POST'])
-def demo_login():
-    """Allow demo login without database."""
-    from demo_accounts import DEMO_ACCOUNTS
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    if not username or not password:
-        return jsonify({"error": "Username and password required"}), 400
-    for account in DEMO_ACCOUNTS:
-        if account["username"] == username and account["password"] == password:
-            has_cal = get_thickness_state().get("calibration_active", False)
-            return jsonify({
-                "message": "Login successful",
-                "username": username,
-                "role": account["role"],
-                "has_calibration": has_cal,
-            }), 200
-    return jsonify({"error": "Invalid username or password"}), 401
 
 # ==========================================
 # APIS - DATA INGEST (from Pi cameras)
@@ -1193,21 +1227,8 @@ def _bearer_token():
     h = request.headers.get("Authorization", "")
     return h[7:].strip() if h.startswith("Bearer ") else None
 
-def require_auth(roles=None):
-    """Gate an endpoint behind a valid token. superadmin always passes; otherwise
-    the token role must be in `roles` (if given). Sets g.auth = {uid, cid, role}."""
-    def deco(fn):
-        @wraps(fn)
-        def wrapper(*a, **kw):
-            data = verify_token(_bearer_token() or "")
-            if not data:
-                return jsonify({"error": "Authentication required"}), 401
-            if roles and data.get("role") != "superadmin" and data.get("role") not in roles:
-                return jsonify({"error": "Forbidden"}), 403
-            g.auth = data
-            return fn(*a, **kw)
-        return wrapper
-    return deco
+# require_auth is defined earlier (above the config/thickness routes) so it can
+# gate them at decoration time.
 
 def _customer_name(customer_id):
     if not customer_id:
@@ -1306,8 +1327,8 @@ def auth_users_create():
     password = (data.get("password") or "").strip()
     role = (data.get("role") or "worker").strip()
     username = (data.get("username") or (email.split("@")[0] if email else "")).strip()
-    if not email or not password:
-        return jsonify({"error": "email and password required"}), 400
+    if not username or not password:
+        return jsonify({"error": "username and password required"}), 400
     if role not in VALID_ROLES:
         return jsonify({"error": f"role must be one of {VALID_ROLES}"}), 400
     # Only a global (Rajdeep) account may create users in an arbitrary customer.
@@ -1321,9 +1342,14 @@ def auth_users_create():
         return jsonify({"error": "Database unavailable"}), 500
     try:
         cur.execute(
+            "SELECT 1 FROM users WHERE username=%s AND customer_id IS NOT DISTINCT FROM %s",
+            (username, customer_id))
+        if cur.fetchone():
+            return jsonify({"error": "username already exists in this company"}), 409
+        cur.execute(
             "INSERT INTO users (username, email, password_hash, role, customer_id) "
             "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (username, email, generate_password_hash(password), role, customer_id))
+            (username, email or None, generate_password_hash(password), role, customer_id))
         uid = cur.fetchone()[0]
         conn.commit()
     except Exception as e:
@@ -1429,6 +1455,7 @@ def get_next_db_id(cursor, table_name, max_rows):
     return next_id
 
 @app.route('/config/read', methods=['POST'])
+@require_auth(roles=("admin",))
 def config_read():
     """Read sensor config register(s). Accepts JSON with 'command' (int) and optional 'sensor'."""
     data = request.json or {}
@@ -1460,6 +1487,7 @@ def config_read():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/config/write', methods=['POST'])
+@require_auth(roles=("admin",))
 def config_write():
     """Write sensor config register(s).
     On server mode, this queues commands for pi_client to poll and execute.
@@ -1517,6 +1545,7 @@ def config_write():
 # APIS - STREAM TRIMMING
 # ==========================================
 @app.route('/stream/trim', methods=['POST'])
+@require_auth(roles=("admin",))
 def stream_trim():
     data = request.json or {}
     target_rate = data.get("target_rate_hz", 5.0)
@@ -1524,6 +1553,7 @@ def stream_trim():
     return jsonify({"message": f"Stream rate set to {target_rate} Hz"}), 200
 
 @app.route('/stream/config', methods=['POST'])
+@require_auth(roles=("admin",))
 def stream_config():
     data = request.json or {}
     # Accept both 'rate' (frontend format) and 'target_rate_hz' (internal format)
