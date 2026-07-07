@@ -1711,7 +1711,25 @@ def _emit_sensor_status(online):
     _last_status_online = online
     _last_status_emit_mono = now_mono
     try:
-        socketio.emit("sensor_status", {"online": bool(online)})
+        socketio.emit("sensor_status", {"online": bool(online)}, room=LEGACY_DEVICE_ID)
+    except Exception:
+        pass
+
+
+_device_status_state = {}   # device_id -> {"online": bool|None, "mono": float}
+
+def _emit_device_sensor_status(device_id, online):
+    """Per-device sensor online/offline pushed to that device's OWN room. Throttled to
+    ~1 Hz, but emits immediately on a transition. Fixes the multi-tenant bug where the
+    global legacy status broadcast made every tenant's dashboard flap 'Sensors
+    disconnected' whenever the legacy pi_client feed was absent."""
+    now_mono = time.monotonic()
+    ent = _device_status_state.get(device_id)
+    if ent and online == ent["online"] and (now_mono - ent["mono"]) < 1.0:
+        return
+    _device_status_state[device_id] = {"online": online, "mono": now_mono}
+    try:
+        socketio.emit("sensor_status", {"online": bool(online)}, room=device_id)
     except Exception:
         pass
 
@@ -1800,7 +1818,7 @@ def _get_device_state(device_id):
     if st is None:
         st = {"windows": {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")},
               "thickness": _load_device_calibration(device_id), "n": 0,
-              "last_raw": {}, "latest": None, "seq": 0}
+              "last_raw": {}, "latest": None, "seq": 0, "last_mono": 0.0}
         device_state[device_id] = st
     return st
 
@@ -1863,6 +1881,10 @@ def _process_device_reading(device_id, a, b, c, now):
         "thickness": raw_thickness,
     }
     st["seq"] = st.get("seq", 0) + 1
+    # Per-device freshness stamp — drives this device's own online/offline banner
+    # (independent of the legacy pi_client feed).
+    if a is not None or b is not None or c is not None:
+        st["last_mono"] = time.monotonic()
 
     conn, cur = _db_connect()
     if conn is not None:
@@ -2013,6 +2035,10 @@ def stream_ingest_loop():
                     socketio.emit("sensor_reading", st["latest"], room=did)
                 except Exception:
                     pass
+            # Per-device online/offline banner, scoped to this device's room so a
+            # tenant's status reflects ITS feed, not the global legacy one.
+            d_online = (time.monotonic() - st.get("last_mono", 0.0)) <= SENSOR_STALE_SECONDS
+            _emit_device_sensor_status(did, d_online)
 
         target_delay = 1.0 / max(stream_state["target_rate_hz"], 1.0)
         time.sleep(target_delay)
