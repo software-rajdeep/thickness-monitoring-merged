@@ -35,6 +35,9 @@ SENSOR_TIMEOUT = 2.0
 SERVER_IP = '0.0.0.0'
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "5002"))
 CLOUD_MODE = os.environ.get("CLOUD_MODE", "false").lower() == "true"
+# LOCAL_MODE = the offline appliance build (thickness-local .deb): SQLite via the
+# local_db shim, license gate, sensors polled directly. Never set on the KVM.
+LOCAL_MODE = os.environ.get("LOCAL_MODE", "false").lower() == "true"
 INGEST_API_KEY = os.environ.get("INGEST_API_KEY", "merged-secret-2026")
 
 # --- DATABASE CONFIG ---
@@ -76,10 +79,14 @@ SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD")
 FILTER_WINDOW = 10
 
 # --- FILE CONFIG ---
-CONFIG_FILE_PATH = os.path.join(BASE_DIR, "sensor_config.json")
-NETWORK_CONFIG_FILE_PATH = os.path.join(BASE_DIR, "sensor_network.json")
-THICKNESS_STATE_FILE_PATH = os.path.join(BASE_DIR, "thickness_state.json")
-THICKNESS_LIMIT_FILE_PATH = os.path.join(BASE_DIR, "thickness_limit.json")
+# DATA_DIR: writable state directory. Defaults to the code directory (cloud /
+# dev behaviour unchanged); the packaged local appliance sets THICKNESS_DATA_DIR
+# because its code lives inside a read-only PyInstaller bundle.
+DATA_DIR = os.environ.get("THICKNESS_DATA_DIR", BASE_DIR)
+CONFIG_FILE_PATH = os.path.join(DATA_DIR, "sensor_config.json")
+NETWORK_CONFIG_FILE_PATH = os.path.join(DATA_DIR, "sensor_network.json")
+THICKNESS_STATE_FILE_PATH = os.path.join(DATA_DIR, "thickness_state.json")
+THICKNESS_LIMIT_FILE_PATH = os.path.join(DATA_DIR, "thickness_limit.json")
 
 # --- ZERO OFFSET ---
 ZERO_OFFSET_MM = 35.0
@@ -676,6 +683,27 @@ def require_auth(roles=None):
 from download_routes import register_download_routes
 register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW,
                          require_auth=require_auth)
+
+# --- LOCAL APPLIANCE: offline license gate ---
+# Only in the packaged local build. Until a valid signed license is activated,
+# every route serves the activation page / 403s. On activation, write the
+# default sensor map for the licensed mode (admin can change IPs later from
+# the Backend page) and activate the sensors immediately.
+if LOCAL_MODE:
+    def _local_on_activated(payload):
+        mode = (payload.get("sensor_mode") or "opposite").lower()
+        current = load_network_config()
+        wanted = {"A", "B", "C"} if mode == "sbs" else {"A", "B"}
+        if set(k.upper() for k in current) != wanted:
+            defaults = {"A": "192.168.1.200", "B": "192.168.1.201", "C": "192.168.1.202"}
+            save_network_config({
+                sid: {"ip": defaults[sid], "port": 8234, "name": f"Sensor {sid}", "sensor_type": "cd22"}
+                for sid in sorted(wanted)
+            })
+        refresh_sensor_configs()
+
+    from local_license import register_license
+    register_license(app, data_dir=DATA_DIR, on_activated=_local_on_activated)
 
 @app.before_request
 def _gate_email_alert_routes():
@@ -1590,7 +1618,7 @@ def config_result():
 @app.route('/<path:path>')
 def serve_react(path):
     """Serve the React frontend for any unmatched route."""
-    static_dir = os.path.join(BASE_DIR, '..', 'dist')
+    static_dir = os.environ.get("FRONTEND_DIST") or os.path.join(BASE_DIR, '..', 'dist')
     index_path = os.path.join(static_dir, 'index.html')
     if not os.path.exists(index_path):
         return jsonify({"error": "Frontend not built. Run 'npm run build' in the project root."}), 404
@@ -1917,6 +1945,7 @@ def stream_ingest_loop():
     In CLOUD_MODE (KVM server), only uses ingest data — the cloud server can't
     reach sensors on the 192.168.5.x LAN.
     """
+    global last_ingest_monotonic
     consecutive_empty_readings = 0
     db_conn, db_cur = _db_connect()
     inserts_since_trim = 0
@@ -1933,12 +1962,14 @@ def stream_ingest_loop():
         # Try to get readings from ingest (pi_client HTTP POST)
         reading = {k: v for k, v in last_ingest_reading.items() if v is not None}
 
-        # Sensor freshness / offline detection (CLOUD_MODE). If no fresh ingest
-        # within SENSOR_STALE_SECONDS, the sensors (or the pi_client link) are
-        # down. Don't keep re-emitting the last values as if they were live —
-        # clear them so the UI can show "Sensors disconnected" and the graph
-        # stops advancing on stale data.
-        if CLOUD_MODE and (time.monotonic() - last_ingest_monotonic) > SENSOR_STALE_SECONDS:
+        # Sensor freshness / offline detection (CLOUD_MODE + LOCAL_MODE). If no
+        # fresh data within SENSOR_STALE_SECONDS, the sensors (or the pi_client
+        # link) are down. Don't keep re-emitting the last values as if they were
+        # live — clear them so the UI can show "Sensors disconnected" and the
+        # graph stops advancing on stale data. In LOCAL_MODE this is also what
+        # makes the loop fall through to poll_local_sensors() every tick (a
+        # fresh local poll below re-stamps last_ingest_monotonic).
+        if (CLOUD_MODE or LOCAL_MODE) and (time.monotonic() - last_ingest_monotonic) > SENSOR_STALE_SECONDS:
             reading = {}
             last_ingest_reading["A"] = None
             last_ingest_reading["B"] = None
@@ -1955,6 +1986,9 @@ def stream_ingest_loop():
                     last_ingest_reading[sid] = val
                 reading = local_readings
                 consecutive_empty_readings = 0
+                # Freshness stamp for directly-polled sensors, so /sensors/status
+                # reports online and the stale-clear above works in LOCAL_MODE.
+                last_ingest_monotonic = time.monotonic()
             else:
                 consecutive_empty_readings += 1
                 # Only log every 100 consecutive failures to avoid spamming
@@ -2053,9 +2087,9 @@ def start_background_tasks():
 # ==========================================
 # MAIN
 # ==========================================
-if __name__ == '__main__':
+def main():
     print(f"========== Starting Merged Server (PORT {SERVER_PORT}) ==========")
-    print(f"  Cloud Mode: {CLOUD_MODE}")
+    print(f"  Cloud Mode: {CLOUD_MODE}   Local Mode: {LOCAL_MODE}")
     init_config_file()
     init_network_config_file()
     refresh_sensor_configs()
@@ -2066,3 +2100,6 @@ if __name__ == '__main__':
     print(f"  Active sensors: {list(active_sensors_map.keys())}")
     print(f"==========================================")
     socketio.run(app, host=SERVER_IP, port=SERVER_PORT, debug=False, allow_unsafe_werkzeug=True)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,9 @@
+# Runtime deps compiled into the thickness-local binary.
+# NO psycopg2 — the local build uses SQLite via backend/local_db.py.
+Flask
+Flask-SocketIO
+simple-websocket
+Werkzeug
+itsdangerous
+requests
+cryptography

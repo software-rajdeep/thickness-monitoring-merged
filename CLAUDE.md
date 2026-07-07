@@ -3,6 +3,15 @@
 Single unified thickness monitoring app for Rajdeep Analytics.
 Two sensor modes (Side-by-Side and Opposite) from one Flask backend and one React frontend.
 
+Two delivery models from this one codebase:
+- **Cloud (SaaS)** — agent `.deb` on a gateway box streams to the KVM; dashboard on Vercel.
+  Runbook: `WAREHOUSE_TO_CUSTOMER_FLOW.md`.
+- **Local appliance (offline)** — `thickness-local` `.deb` runs everything (sensors,
+  SQLite, dashboard) on one box on the customer LAN, no internet; offline Ed25519
+  license activation. Runbook: `LOCAL_APPLIANCE_FLOW.md`. Build: `local/build-local-deb.sh`.
+  License tool: `tools/local_license_tool.py` (signing key in `~/thickness-license-keys`,
+  never in git). All local-only behaviour is gated on `LOCAL_MODE=true` — never set on the KVM.
+
 ---
 
 ## Primary Development Machine

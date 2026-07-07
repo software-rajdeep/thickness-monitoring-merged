@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ]; then
+    systemctl stop thickness-local.service || true
+    systemctl disable thickness-local.service || true
+fi
+exit 0

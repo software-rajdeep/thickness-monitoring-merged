@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+
+mkdir -p /var/lib/thickness-local
+chmod 750 /var/lib/thickness-local
+
+# Per-install runtime env. AUTH_SECRET signs login tokens — generated once per
+# box so tokens survive restarts but differ between customers.
+if [ ! -f /etc/thickness-local/env ]; then
+    mkdir -p /etc/thickness-local
+    cat > /etc/thickness-local/env <<EOF
+LOCAL_MODE=true
+CLOUD_MODE=false
+SERVER_PORT=80
+THICKNESS_DATA_DIR=/var/lib/thickness-local
+AUTH_SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+EOF
+    chmod 600 /etc/thickness-local/env
+fi
+
+systemctl daemon-reload
+systemctl enable thickness-local.service
+systemctl restart thickness-local.service
+
+IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+echo ""
+echo "Thickness Local installed and running."
+echo "Open http://${IP:-<this-machine-ip>}/ in a browser on this network"
+echo "to see the machine code and activate the license."
+exit 0

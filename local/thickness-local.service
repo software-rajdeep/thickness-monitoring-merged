@@ -1,0 +1,17 @@
+[Unit]
+Description=Thickness Monitoring System — Local Appliance (Rajdeep Analytics)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root: binds port 80 and owns /var/lib/thickness-local. The box is a dedicated
+# appliance; there is no other workload to protect.
+User=root
+EnvironmentFile=/etc/thickness-local/env
+ExecStart=/opt/thickness-local/thickness-local
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

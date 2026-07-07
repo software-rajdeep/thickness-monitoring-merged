@@ -16,8 +16,11 @@ from email.mime.multipart import MIMEMultipart
 from flask import Blueprint, request, jsonify
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EMAIL_CONFIG_PATH = os.path.join(BASE_DIR, "email_alert_config.json")
-TOKEN_PATH = os.path.join(BASE_DIR, "gmail_token.json")
+# Writable state dir — defaults to the code dir (cloud behaviour unchanged);
+# the packaged local appliance overrides it since its bundle is read-only.
+_DATA_DIR = os.environ.get("THICKNESS_DATA_DIR", BASE_DIR)
+EMAIL_CONFIG_PATH = os.path.join(_DATA_DIR, "email_alert_config.json")
+TOKEN_PATH = os.path.join(_DATA_DIR, "gmail_token.json")
 
 # Allow overriding the OAuth redirect URI via environment variable (for ngrok HTTPS)
 OAUTH_REDIRECT_URI = os.environ.get(

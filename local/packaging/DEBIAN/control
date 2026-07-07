@@ -1,0 +1,12 @@
+Package: thickness-local
+Version: 1.0.0
+Section: misc
+Priority: optional
+Architecture: amd64
+Maintainer: Rajdeep Analytics <aadit@rajdeepanalytics.com>
+Description: Thickness Monitoring System - fully local appliance
+ Complete offline thickness monitoring: reads CD22 laser sensors over the
+ local network, stores readings in an embedded database, and serves the
+ dashboard at http://<this-machine> on the LAN. No internet connection is
+ required or used. Activation via a signed license code from Rajdeep
+ Analytics.
