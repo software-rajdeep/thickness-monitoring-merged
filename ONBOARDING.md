@@ -36,7 +36,7 @@ POST `/auth/users` with their token.
 ```sql
 UPDATE devices SET revoked=true WHERE device_id='dev_xxx';
 ```
-Ingest stops immediately (401). Un-revoke by setting false. A lost device key
+Ingest starts returning 401 within ~30 s (device-auth cache TTL). Un-revoke by setting false. A lost device key
 cannot be recovered (only the hash is stored) — revoke and provision a new device.
 
 ## Support checks
