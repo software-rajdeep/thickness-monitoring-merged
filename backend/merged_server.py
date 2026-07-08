@@ -559,6 +559,14 @@ def init_db():
 # SENSOR CLASS
 # ==========================================
 class CD22Sensor:
+    # After a failed connect, wait this long before trying again -- without a
+    # backoff, a permanently unreachable sensor (e.g. a configured slot with
+    # no hardware plugged in) gets retried on every single poll iteration,
+    # and each attempt blocks the poll loop for the full SENSOR_TIMEOUT. In
+    # the LOCAL_MODE tight poll loop that would otherwise stall every sensor
+    # (not just the dead one) almost continuously.
+    RECONNECT_BACKOFF = 3.0
+
     def __init__(self, ip, port, name):
         self.ip = ip
         self.port = port
@@ -566,9 +574,12 @@ class CD22Sensor:
         self.sock = None
         self.lock = threading.Lock()
         self.connected = False
+        self._next_connect_attempt = 0.0
 
     def connect(self):
         if self.connected: return True
+        if time.monotonic() < self._next_connect_attempt:
+            return False
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(SENSOR_TIMEOUT)
@@ -577,6 +588,7 @@ class CD22Sensor:
             return True
         except Exception:
             self.connected = False
+            self._next_connect_attempt = time.monotonic() + self.RECONNECT_BACKOFF
             if self.sock:
                 try: self.sock.close()
                 except: pass
