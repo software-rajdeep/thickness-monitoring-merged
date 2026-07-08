@@ -30,6 +30,14 @@ VERSION="${1:-1.0.0}"
 ARCH="$(dpkg --print-architecture)"
 echo ">> Building thickness-local ${VERSION} for ${ARCH}"
 
+# Vite needs Node >= 20. Non-interactive shells don't source nvm — do it here.
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  . "$NVM_DIR/nvm.sh"
+  nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
+fi
+echo ">> Using node $(node --version)"
+
 [ -f "$ROOT/backend/license_pubkey.txt" ] || {
   echo "!! backend/license_pubkey.txt missing — run tools/local_license_tool.py init first."; exit 1; }
 
