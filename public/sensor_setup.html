@@ -454,6 +454,14 @@
         const SENSOR_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'];
         let sensorCount = 0;
 
+        // The backend gates /config/network behind a login token (multi-tenant
+        // auth). This page is served same-origin by that same backend, so it can
+        // read the token the React app already stored in localStorage on login.
+        function authHeaders() {
+            const t = localStorage.getItem('thicknessmon.token');
+            return t ? { 'Authorization': `Bearer ${t}` } : {};
+        }
+
         // When this page is served by the backend itself (http/https), all calls
         // are same-origin — no CORS, and no need to type an IP/port. Only when the
         // file is opened directly from disk (file://) do we fall back to the
@@ -522,11 +530,14 @@
             try {
                 const response = await fetch(`${baseUrl}/config/network`, {
                     method: 'GET',
-                    headers: { 'Accept': 'application/json' }
+                    headers: { 'Accept': 'application/json', ...authHeaders() }
                 });
 
                 if (!response.ok) {
                     const err = await response.json().catch(() => ({}));
+                    if (response.status === 401) {
+                        throw new Error('Not logged in — open this page from the app\'s Backend section, or log in to the dashboard first in this same browser.');
+                    }
                     throw new Error(err.error || `HTTP ${response.status}`);
                 }
 
@@ -604,7 +615,7 @@
             try {
                 const response = await fetch(`${baseUrl}/config/network`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
                     body: JSON.stringify(config)
                 });
 
@@ -616,6 +627,8 @@
                         ? `Config saved! Active sensors: ${active.join(', ')}`
                         : 'Config saved successfully!';
                     showStatus(msg, 'success');
+                } else if (response.status === 401) {
+                    showStatus('Not logged in — open this page from the app\'s Backend section, or log in to the dashboard first in this same browser.', 'error');
                 } else {
                     showStatus(`Error: ${data.error || 'Unknown error'}`, 'error');
                 }

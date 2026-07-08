@@ -406,6 +406,37 @@ DB_NAME          = ${srvConfig.db_name}`}
         </div>
       </div>
 
+      {/* SENSOR NETWORK SETUP */}
+      {canManageUsers && (
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Sensor Network Setup</span>
+          </div>
+          <div style={{
+            background:   "var(--bg2)",
+            border:       "1px solid var(--border)",
+            borderRadius: "var(--r2)",
+            padding:      "16px 18px",
+            display:      "flex",
+            alignItems:   "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}>
+            <div style={{ fontSize: 13, color: "var(--text-2)" }}>
+              Add, remove, or re-point sensor IP/port/name. Opens in a new tab and
+              takes effect immediately, no restart needed.
+            </div>
+            <button
+              className="btn btn-blue"
+              onClick={() => window.open("/sensor_setup.html", "_blank")}
+            >
+              <Ic.Wifi /> Open Sensor Setup
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* TOAST */}
       {toast && (
         <div className={`toast ${toast.type}`}>
