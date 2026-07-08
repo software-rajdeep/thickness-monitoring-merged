@@ -597,7 +597,7 @@ class CD22Sensor:
             if not self.connected:
                 if not self.connect(): return None
             try:
-                self.sock.settimeout(0.1)
+                self.sock.settimeout(0.3)
                 self.sock.sendall(cmd_bytes)
                 resp = self.sock.recv(6)
                 self.sock.settimeout(SENSOR_TIMEOUT)
@@ -607,7 +607,10 @@ class CD22Sensor:
                     return raw * 0.01
             except Exception:
                 self.connected = False
-                if self.sock: self.sock.settimeout(SENSOR_TIMEOUT)
+                if self.sock:
+                    try: self.sock.close()
+                    except: pass
+                    self.sock = None
                 return None
         return None
 
