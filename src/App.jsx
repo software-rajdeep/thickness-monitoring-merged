@@ -62,7 +62,6 @@ export default function App() {
 
   const socketRef       = useRef(null);
   const counterRef      = useRef(1);
-  const dataBufferRef   = useRef([]);
   const lastReadingTime = useRef(null);
 
   // ── Mode selection ─────────────────────────────────────────────────────
@@ -343,7 +342,6 @@ export default function App() {
         };
       }
 
-      dataBufferRef.current = [row, ...dataBufferRef.current].slice(0, 100000);
       setRows(prev => [row, ...prev.slice(0, 99)]);
 
       // Stream rate detect
@@ -408,7 +406,6 @@ export default function App() {
     setSelectedDevice(did);
     setDeviceId(did);
     setRows([]);
-    dataBufferRef.current = [];
     counterRef.current = 1;
     loadThicknessState();   // reflect the new device's calibration
     if (socketRef.current) {
@@ -436,7 +433,6 @@ export default function App() {
     setRunModeVisitKey(0);
     setThicknessLimit({ active: false, min: "", max: "" });
     try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
-    dataBufferRef.current   = [];
     counterRef.current      = 1;
     lastReadingTime.current = null;
   }
@@ -612,7 +608,6 @@ export default function App() {
             <DownloadPage
               user={user}
               onToast={showToast}
-              dataBufferRef={dataBufferRef}
             />
           )}
           {page === "backend" && (
