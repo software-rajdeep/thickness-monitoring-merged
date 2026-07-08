@@ -597,7 +597,7 @@ class CD22Sensor:
             if not self.connected:
                 if not self.connect(): return None
             try:
-                self.sock.settimeout(0.3)
+                self.sock.settimeout(0.1)
                 self.sock.sendall(cmd_bytes)
                 resp = self.sock.recv(6)
                 self.sock.settimeout(SENSOR_TIMEOUT)
@@ -1714,6 +1714,56 @@ def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness, device_i
         )
     conn.commit()
 
+
+def _db_write_batch(conn, cur, raw_rows, filt_row, device_id=LEGACY_DEVICE_ID):
+    """LOCAL_MODE fast-poll counterpart to _db_write: writes every individual
+    raw sample collected since the last emit (one row per real hardware poll)
+    plus a single filtered row for the emit interval, all under one commit --
+    instead of one commit per raw sample.
+
+    raw_rows -> list of (timestamp, ra, rb, rc, raw_thickness) tuples, one per
+                hardware sample collected since the last emit.
+    filt_row -> (timestamp, fa, fb, fc, filt_thickness) for this emit interval.
+    """
+    for ts, ra, rb, rc, raw_thickness in raw_rows:
+        cur.execute(
+            f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
+            (ts, ra, rb, rc, device_id)
+        )
+        if ra is not None and rb is not None:
+            cur.execute(
+                f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
+                (ts, ra, rb, raw_thickness, device_id)
+            )
+
+    ts, fa, fb, fc, filt_thickness = filt_row
+    cur.execute(
+        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
+        (ts, fa, fb, fc, device_id)
+    )
+    if fa is not None and fb is not None:
+        cur.execute(
+            f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
+            (ts, fa, fb, filt_thickness, device_id)
+        )
+    conn.commit()
+
+
+def calculate_filtered_average(data_batch):
+    """Trimmed mean: drop the extreme 10% of samples at each end, then average
+    the rest. Ported from the original standalone cd22_server.py -- averaging
+    over a whole batch of real hardware samples (collected at full poll rate)
+    is far more representative than a rolling mean fed one sample per emit."""
+    if not data_batch:
+        return None
+    n = len(data_batch)
+    if n < 3:
+        return sum(data_batch) / n
+    sorted_data = sorted(data_batch)
+    trim_count = max(1, int(n * 0.10))
+    trimmed = sorted_data[trim_count:-trim_count]
+    return sum(trimmed) / len(trimmed) if trimmed else sum(sorted_data) / n
+
 def _db_trim(cur, conn):
     """Delete oldest rows when any table exceeds its row limit."""
     for table, limit in [
@@ -1938,6 +1988,125 @@ def on_join_device(data):
         join_room(did)
 
 
+def _stream_ingest_loop_local():
+    """LOCAL_MODE-only fast-poll branch of the stream loop.
+
+    The old standalone app (cd22_server.py) polled sensors as fast as the
+    ethernet link allowed in a tight loop, accumulated every sample per
+    ~200ms window, and emitted a trimmed-mean average at 5 Hz. The generic
+    stream_ingest_loop below instead paces the WHOLE pipeline (poll + emit +
+    DB write) at 5 Hz, polling each sensor only once per cycle -- so its
+    deque(maxlen=FILTER_WINDOW) average is built from one sample every 200ms
+    and lags/smears badly. This branch restores the original behaviour for
+    the local appliance, where sensors are always reachable directly:
+    poll continuously, batch every real sample, and only emit/write once
+    per target_rate_hz interval using a trimmed mean over that batch.
+
+    CLOUD_MODE never reaches this function (see the dispatch at the top of
+    stream_ingest_loop) -- its ingest-fed, 5 Hz-paced behaviour is untouched.
+    """
+    global last_ingest_monotonic
+    db_conn, db_cur = _db_connect()
+    inserts_since_trim = 0
+    batches = {sid: [] for sid in ("A", "B", "C")}
+    raw_db_buffer = []
+    device_emit_seq = {}
+    last_emit_time = time.time()
+
+    while True:
+        if not stream_state["active"]:
+            socketio.sleep(0.1)
+            continue
+
+        local_readings = poll_local_sensors()
+        if local_readings:
+            last_ingest_monotonic = time.monotonic()
+            for sid, val in local_readings.items():
+                last_ingest_reading[sid] = val
+                batches[sid].append(float(val))
+            state_now = get_thickness_state()
+            raw_thickness_now = _compute_thickness(
+                last_ingest_reading.get("A"), last_ingest_reading.get("B"), state_now)
+            raw_db_buffer.append((
+                datetime.datetime.now(),
+                last_ingest_reading.get("A"),
+                last_ingest_reading.get("B"),
+                last_ingest_reading.get("C"),
+                raw_thickness_now,
+            ))
+
+        # Tell the frontend whether sensors are live or disconnected.
+        online = (time.monotonic() - last_ingest_monotonic) <= SENSOR_STALE_SECONDS
+        _emit_sensor_status(online)
+
+        current_time = time.time()
+        if current_time - last_emit_time >= (1.0 / max(stream_state["target_rate_hz"], 1.0)):
+            last_emit_time = current_time
+            has_data = any(batches[sid] for sid in batches)
+
+            if has_data:
+                now = datetime.datetime.now()
+                state = get_thickness_state()
+
+                filtered = {}
+                for sid in ("A", "B", "C"):
+                    batch = batches[sid]
+                    filtered[sid] = round(calculate_filtered_average(batch), 3) if batch else None
+                    batches[sid] = []
+
+                filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), state)
+
+                if filt_thickness is not None:
+                    try:
+                        check_thresholds_and_alert(filt_thickness, sensor_id="Opposite Sensors")
+                    except Exception:
+                        pass  # Don't let alert errors disrupt the stream
+
+                payload = {
+                    "timestamp": now.isoformat(),
+                    "distance_A": filtered.get("A"),
+                    "distance_B": filtered.get("B"),
+                    "distance_C": filtered.get("C"),
+                    "thickness": filt_thickness,
+                    "device_id": LEGACY_DEVICE_ID,
+                }
+                socketio.emit("sensor_reading", payload, room=LEGACY_DEVICE_ID)
+
+                # Write to DB; reconnect once on failure
+                if db_conn is None:
+                    db_conn, db_cur = _db_connect()
+                if db_conn is not None:
+                    try:
+                        _db_write_batch(db_conn, db_cur, raw_db_buffer,
+                                         (now, filtered.get("A"), filtered.get("B"), filtered.get("C"), filt_thickness))
+                        inserts_since_trim += 1
+                        if inserts_since_trim >= 10000:
+                            _db_trim(db_cur, db_conn)
+                            inserts_since_trim = 0
+                    except Exception as e:
+                        print(f"[Stream DB] write error: {e}")
+                        try:
+                            db_conn.rollback()
+                        except Exception:
+                            pass
+                        db_conn, db_cur = _db_connect()
+                raw_db_buffer = []
+
+            # Per-device live emit + status, same cadence as the emit interval.
+            for did, st in list(device_state.items()):
+                seq = st.get("seq", 0)
+                if st.get("latest") and seq != device_emit_seq.get(did):
+                    device_emit_seq[did] = seq
+                    try:
+                        socketio.emit("sensor_reading", st["latest"], room=did)
+                    except Exception:
+                        pass
+                d_online = (time.monotonic() - st.get("last_mono", 0.0)) <= SENSOR_STALE_SECONDS
+                _emit_device_sensor_status(did, d_online)
+
+        socketio.sleep(0.001)
+
+
 def stream_ingest_loop():
     """Background thread: emits sensor readings via WebSocket and writes them to the DB.
 
@@ -1948,6 +2117,16 @@ def stream_ingest_loop():
     In CLOUD_MODE (KVM server), only uses ingest data — the cloud server can't
     reach sensors on the 192.168.5.x LAN.
     """
+    if LOCAL_MODE and not CLOUD_MODE:
+        # Gated on the mode flags only (not active_sensors_map) -- the local
+        # appliance starts this thread before license activation populates
+        # active_sensors_map, and this dispatch only runs once at thread
+        # start. poll_local_sensors() already no-ops safely when there are
+        # no active sensors yet, so the fast-poll loop is always the right
+        # branch for a LOCAL_MODE build regardless of activation timing.
+        _stream_ingest_loop_local()
+        return
+
     global last_ingest_monotonic
     consecutive_empty_readings = 0
     db_conn, db_cur = _db_connect()
