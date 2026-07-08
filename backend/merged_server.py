@@ -32,6 +32,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SENSOR_CONFIGS = {}
 
 SENSOR_TIMEOUT = 2.0
+# Separate, much shorter timeout for the initial TCP connect() only (not the
+# read timeout). A real CD22 sensor on the local wired LAN connects in low
+# single-digit milliseconds; a configured-but-unplugged sensor slot with
+# nothing listening just goes unanswered until this expires. Using the full
+# SENSOR_TIMEOUT here would mean every periodic reconnect retry to a dead
+# sensor blocks the whole poll loop (all sensors, not just the dead one) for
+# that long -- capping it short keeps a phantom sensor's damage minimal.
+SENSOR_CONNECT_TIMEOUT = 0.3
 SERVER_IP = '0.0.0.0'
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "5002"))
 CLOUD_MODE = os.environ.get("CLOUD_MODE", "false").lower() == "true"
@@ -582,8 +590,9 @@ class CD22Sensor:
             return False
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(SENSOR_TIMEOUT)
+            self.sock.settimeout(SENSOR_CONNECT_TIMEOUT)
             self.sock.connect((self.ip, self.port))
+            self.sock.settimeout(SENSOR_TIMEOUT)
             self.connected = True
             return True
         except Exception:
