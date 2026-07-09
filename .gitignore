@@ -46,3 +46,4 @@ backend/venv/
 .vercel/
 backend/email_alert_config.json
 .vercel
+local/build/

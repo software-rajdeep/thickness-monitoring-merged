@@ -612,20 +612,52 @@ class CD22Sensor:
                 except: pass
                 self.sock = None
 
-    def get_single_measurement(self):
-        cmd_bytes = bytes([STX, 0x43, 0xB0, 0x01, ETX, (0x43^0xB0^0x01)])
+    def _drain(self):
+        """Discard any stale bytes left in the receive buffer (e.g. the tail of
+        a reply that arrived after a previous read timed out). Without this,
+        one late/split TCP segment permanently desyncs the request/response
+        framing and every subsequent read returns garbage."""
+        try:
+            self.sock.settimeout(0.0)
+            while self.sock.recv(256):
+                pass
+        except Exception:
+            pass
+
+    def _recv_exact(self, n, deadline):
+        """recv() until exactly n bytes arrive or the deadline passes. Over
+        WiFi the 6-byte reply routinely arrives split across TCP segments, so
+        a single recv(n) is not enough."""
+        buf = b''
+        while len(buf) < n:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("sensor response deadline exceeded")
+            self.sock.settimeout(remaining)
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("sensor closed connection")
+            buf += chunk
+        return buf
+
+    def transact(self, cmd_bytes, resp_len=6, deadline_s=0.5):
+        """Send one command frame and read one exact-length reply. Returns the
+        reply bytes or None. Only hard socket errors tear down the connection;
+        a timeout just fails this poll (leftover bytes are drained next time)."""
         with self.lock:
             if not self.connected:
                 if not self.connect(): return None
             try:
-                self.sock.settimeout(0.1)
+                self._drain()
+                self.sock.settimeout(deadline_s)
                 self.sock.sendall(cmd_bytes)
-                resp = self.sock.recv(6)
+                resp = self._recv_exact(resp_len, time.monotonic() + deadline_s)
                 self.sock.settimeout(SENSOR_TIMEOUT)
-                if resp and len(resp) == 6 and resp[1] == 0x06:
-                    raw = (resp[2] << 8) | resp[3]
-                    if raw > 32767: raw -= 65536
-                    return raw * 0.01
+                return resp
+            except socket.timeout:
+                try: self.sock.settimeout(SENSOR_TIMEOUT)
+                except Exception: pass
+                return None
             except Exception:
                 self.connected = False
                 if self.sock:
@@ -633,7 +665,25 @@ class CD22Sensor:
                     except: pass
                     self.sock = None
                 return None
+
+    def get_single_measurement(self):
+        cmd_bytes = bytes([STX, 0x43, 0xB0, 0x01, ETX, (0x43^0xB0^0x01)])
+        resp = self.transact(cmd_bytes, resp_len=6)
+        if resp and resp[0] == STX and resp[1] == 0x06:
+            raw = (resp[2] << 8) | resp[3]
+            if raw > 32767: raw -= 65536
+            return raw * 0.01
         return None
+
+    def write_register(self, addr_h, addr_l, val_h, val_l):
+        """Register write, same sequence pi_client uses: read the register
+        first (protocol requirement), then write the value. Returns True on
+        an ACKed write."""
+        read_cmd = bytes([STX, 0x52, addr_h, addr_l, ETX, (0x52 ^ addr_h ^ addr_l)])
+        self.transact(read_cmd, resp_len=6)  # response content not needed
+        write_cmd = bytes([STX, 0x57, val_h, val_l, ETX, (0x57 ^ val_h ^ val_l)])
+        resp = self.transact(write_cmd, resp_len=6, deadline_s=1.0)
+        return bool(resp and resp[1] == 0x06)
 
 # ==========================================
 # FLASK & SOCKETIO SETUP
@@ -1523,13 +1573,7 @@ def config_read():
     msb = (cmd_int >> 8) & 0xFF
     cmd_bytes = bytes([STX, 0x4A, msb, lsb, ETX, (0x4A ^ msb ^ lsb)])
     try:
-        with sensor.lock:
-            if not sensor.connected and not sensor.connect():
-                return jsonify({"error": f"Cannot connect to sensor {sensor_id}"}), 500
-            sensor.sock.settimeout(0.1)
-            sensor.sock.sendall(cmd_bytes)
-            resp = sensor.sock.recv(8)
-            sensor.sock.settimeout(SENSOR_TIMEOUT)
+        resp = sensor.transact(cmd_bytes, resp_len=6)
         if resp and len(resp) >= 6 and resp[1] == 0x06:
             raw = (resp[2] << 8) | resp[3]
             if raw > 32767: raw -= 65536
@@ -1575,7 +1619,26 @@ def config_write():
         except (ValueError, TypeError) as e:
             return jsonify({"error": f"Invalid command/value: {e}"}), 400
 
-    # Queue the command for pi_client to pick up
+    if not CLOUD_MODE:
+        # The server owns the sensor connections (local appliance / direct
+        # mode) — there is no pi_client polling /config/poll, so execute the
+        # write on the sensor right here instead of queueing it forever.
+        sensor = active_sensors_map.get(sensor_id)
+        if sensor is None:
+            return jsonify({"error": f"Sensor {sensor_id} not found"}), 404
+        ok = sensor.write_register((cmd_int >> 8) & 0xFF, cmd_int & 0xFF,
+                                   (val_int >> 8) & 0xFF, val_int & 0xFF)
+        if not ok:
+            return jsonify({"error": f"Sensor {sensor_id} did not acknowledge write of reg 0x{cmd_int:04X}"}), 500
+        return jsonify({
+            "sensor": sensor_id,
+            "command": cmd_int,
+            "value": val_int,
+            "success": True,
+            "message": f"Write applied - reg 0x{cmd_int:04X} = 0x{val_int:04X}"
+        }), 200
+
+    # CLOUD_MODE: queue the command for pi_client to pick up
     cmd_entry = {
         "sensor": sensor_id,
         "addr_h": f"0x{(cmd_int >> 8) & 0xFF:02X}",
