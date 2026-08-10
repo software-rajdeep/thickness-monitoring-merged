@@ -1216,9 +1216,12 @@ def sensors_status():
     for sid in ("A", "B", "C"):
         seen = last_sensor_monotonic.get(sid, 0.0)
         per[sid] = bool(seen > 0.0 and (now_mono - seen) <= SENSOR_STALE_SECONDS)
-    configured = set(active_sensors_map.keys())
-    # Online means every sensor this install actually uses is reporting; with no
-    # configured sensors fall back to the aggregate ingest freshness.
+    # LOCAL_MODE only: online means EVERY configured sensor is reporting -- one
+    # dead sensor makes the thickness untrustworthy, so the appliance must say so
+    # rather than look healthy on the strength of its surviving partner. The
+    # cloud keeps its original aggregate-freshness semantics untouched (its
+    # sensor set is driven by pi_client, not by this box).
+    configured = set(active_sensors_map.keys()) if LOCAL_MODE else set()
     if configured:
         online = all(per.get(sid) for sid in configured)
     else:
