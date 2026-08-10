@@ -204,8 +204,12 @@ def rebuild_active_sensors():
 def refresh_sensor_configs(new_config=None):
     """Update SENSOR_CONFIGS from file or provided dict; rebuild active sensors."""
     global SENSOR_CONFIGS
-    if new_config:
-        SENSOR_CONFIGS.update(new_config)
+    if new_config is not None:
+        # Replace wholesale (NOT .update()) so sensors removed in the new config
+        # actually drop. .update() merged the new set onto the old, so a deleted
+        # sensor lingered in SENSOR_CONFIGS and got re-saved to disk — i.e. removing
+        # a sensor in Sensor Setup silently came back on the next rebuild.
+        SENSOR_CONFIGS = dict(new_config)
         save_network_config(SENSOR_CONFIGS)
     else:
         SENSOR_CONFIGS = load_network_config()
@@ -727,9 +731,31 @@ _ingest_emit_lock = threading.Lock()
 # detect when the sensors (or the pi_client link) have gone offline, so it can
 # stop presenting the last received values as if they were still live.
 last_ingest_monotonic = 0.0
+# Per-sensor freshness: monotonic timestamp of the last real value FOR EACH
+# sensor. last_ingest_monotonic alone is not enough -- with two sensors, one
+# can die while the other keeps reporting, which keeps the aggregate timestamp
+# fresh forever. Without per-sensor tracking the dead sensor's last value stays
+# in last_ingest_reading indefinitely and gets logged (and folded into
+# thickness) as though it were a live measurement.
+last_sensor_monotonic = {"A": 0.0, "B": 0.0, "C": 0.0}
 SENSOR_STALE_SECONDS = 3.0
 _last_status_emit_mono = 0.0
 _last_status_online = None
+
+
+def _expire_stale_sensor_readings():
+    """Null out any sensor whose last real value is older than the stale window,
+    so a dead sensor stops contributing a frozen value to readings, thickness
+    and the DB. Returns the set of sensor ids currently considered live."""
+    now_mono = time.monotonic()
+    live = set()
+    for sid in ("A", "B", "C"):
+        seen = last_sensor_monotonic.get(sid, 0.0)
+        if seen > 0.0 and (now_mono - seen) <= SENSOR_STALE_SECONDS:
+            live.add(sid)
+        elif last_ingest_reading.get(sid) is not None:
+            last_ingest_reading[sid] = None
+    return live
 
 # ==========================================
 # AUTH GATE (defined early so route decorators below can use it; the token
@@ -765,14 +791,17 @@ register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_T
 # the Backend page) and activate the sensors immediately.
 if LOCAL_MODE:
     def _local_on_activated(payload):
-        mode = (payload.get("sensor_mode") or "opposite").lower()
+        # Seed a default sensor set ONLY on a fresh box (no existing config).
+        # Recipe default is 2 sensors (A, B); works for Side-by-Side or Opposite,
+        # and sensors can be added/removed anytime from Sensor Setup. Never
+        # overwrite an existing config — on licence renewal the customer's own
+        # sensor list (which may be 1, 2 or 3 sensors) is preserved.
         current = load_network_config()
-        wanted = {"A", "B", "C"} if mode == "sbs" else {"A", "B"}
-        if set(k.upper() for k in current) != wanted:
-            defaults = {"A": "192.168.1.200", "B": "192.168.1.201", "C": "192.168.1.202"}
+        if not current:
+            defaults = {"A": "192.168.1.200", "B": "192.168.1.201"}
             save_network_config({
-                sid: {"ip": defaults[sid], "port": 8234, "name": f"Sensor {sid}", "sensor_type": "cd22"}
-                for sid in sorted(wanted)
+                sid: {"ip": ip, "port": 8234, "name": f"Sensor {sid}", "sensor_type": "cd22"}
+                for sid, ip in sorted(defaults.items())
             })
         refresh_sensor_configs()
 
@@ -1162,9 +1191,13 @@ def ingest_data():
     last_ingest_reading["B"] = float(b) if b is not None else None
     last_ingest_reading["C"] = float(c) if c is not None else None
     # Mark data freshness so the stream loop can detect when sensors go offline.
+    _now_mono = time.monotonic()
+    for _sid, _val in (("A", a), ("B", b), ("C", c)):
+        if _val is not None:
+            last_sensor_monotonic[_sid] = _now_mono
     if a is not None or b is not None or c is not None:
         global last_ingest_monotonic
-        last_ingest_monotonic = time.monotonic()
+        last_ingest_monotonic = _now_mono
     return jsonify({"message": "Data received", "timestamp": now.isoformat()}), 200
 
 
@@ -1175,9 +1208,21 @@ def sensors_status():
     online = an ingest POST with real data arrived within SENSOR_STALE_SECONDS.
     Lets the frontend show a clear "Sensors disconnected" state.
     """
-    age = time.monotonic() - last_ingest_monotonic
-    online = (last_ingest_monotonic > 0) and (age <= SENSOR_STALE_SECONDS)
-    per = {sid: (last_ingest_reading.get(sid) is not None) for sid in ("A", "B", "C")}
+    now_mono = time.monotonic()
+    age = now_mono - last_ingest_monotonic
+    # Per-sensor freshness, not "does a value linger in last_ingest_reading" --
+    # a sensor that died while its partner keeps reporting must show as offline.
+    per = {}
+    for sid in ("A", "B", "C"):
+        seen = last_sensor_monotonic.get(sid, 0.0)
+        per[sid] = bool(seen > 0.0 and (now_mono - seen) <= SENSOR_STALE_SECONDS)
+    configured = set(active_sensors_map.keys())
+    # Online means every sensor this install actually uses is reporting; with no
+    # configured sensors fall back to the aggregate ingest freshness.
+    if configured:
+        online = all(per.get(sid) for sid in configured)
+    else:
+        online = (last_ingest_monotonic > 0) and (age <= SENSOR_STALE_SECONDS)
     return jsonify({
         "online": bool(online),
         "stale_seconds": round(age, 2) if last_ingest_monotonic > 0 else None,
@@ -2104,10 +2149,21 @@ def _stream_ingest_loop_local():
 
         local_readings = poll_local_sensors()
         if local_readings:
-            last_ingest_monotonic = time.monotonic()
+            poll_mono = time.monotonic()
+            last_ingest_monotonic = poll_mono
             for sid, val in local_readings.items():
                 last_ingest_reading[sid] = val
+                last_sensor_monotonic[sid] = poll_mono
                 batches[sid].append(float(val))
+
+        # Drop any sensor that has stopped answering. Without this, a sensor
+        # that dies while its partner keeps polling leaves its last value in
+        # last_ingest_reading forever, and every subsequent raw row below would
+        # log that frozen distance plus a thickness computed from it -- readings
+        # that look real in the customer's exported data but are fabricated.
+        _expire_stale_sensor_readings()
+
+        if local_readings:
             state_now = get_thickness_state()
             raw_thickness_now = _compute_thickness(
                 last_ingest_reading.get("A"), last_ingest_reading.get("B"), state_now)
@@ -2119,8 +2175,18 @@ def _stream_ingest_loop_local():
                 raw_thickness_now,
             ))
 
-        # Tell the frontend whether sensors are live or disconnected.
-        online = (time.monotonic() - last_ingest_monotonic) <= SENSOR_STALE_SECONDS
+        # Tell the frontend whether sensors are live or disconnected. Every
+        # configured sensor must be reporting -- one dead sensor means the
+        # thickness measurement is not trustworthy, so say so.
+        with sensors_lock:
+            configured = set(active_sensors_map.keys())
+        if configured:
+            online = all(
+                last_sensor_monotonic.get(sid, 0.0) > 0.0
+                and (time.monotonic() - last_sensor_monotonic[sid]) <= SENSOR_STALE_SECONDS
+                for sid in configured)
+        else:
+            online = (time.monotonic() - last_ingest_monotonic) <= SENSOR_STALE_SECONDS
         _emit_sensor_status(online)
 
         current_time = time.time()
@@ -2240,6 +2306,11 @@ def stream_ingest_loop():
             last_ingest_reading["A"] = None
             last_ingest_reading["B"] = None
             last_ingest_reading["C"] = None
+        else:
+            # Expire individual sensors that stopped reporting while others
+            # kept the aggregate timestamp fresh (see _expire_stale_sensor_readings).
+            _expire_stale_sensor_readings()
+            reading = {k: v for k, v in reading.items() if last_ingest_reading.get(k) is not None}
 
         # If no ingest data available AND not CLOUD_MODE AND there are active local
         # sensors, poll them directly. Skip in CLOUD_MODE — cloud server can't
@@ -2248,13 +2319,15 @@ def stream_ingest_loop():
             local_readings = poll_local_sensors()
             if local_readings:
                 # Update last_ingest_reading so other endpoints can use the data too
+                poll_mono = time.monotonic()
                 for sid, val in local_readings.items():
                     last_ingest_reading[sid] = val
+                    last_sensor_monotonic[sid] = poll_mono
                 reading = local_readings
                 consecutive_empty_readings = 0
                 # Freshness stamp for directly-polled sensors, so /sensors/status
                 # reports online and the stale-clear above works in LOCAL_MODE.
-                last_ingest_monotonic = time.monotonic()
+                last_ingest_monotonic = poll_mono
             else:
                 consecutive_empty_readings += 1
                 # Only log every 100 consecutive failures to avoid spamming

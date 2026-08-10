@@ -33,6 +33,36 @@ else:
 os.environ.setdefault("THICKNESS_DATA_DIR", _default_data)
 os.makedirs(os.environ["THICKNESS_DATA_DIR"], exist_ok=True)
 
+# --- per-install login-token secret ------------------------------------------
+# AUTH_SECRET signs the login tokens that carry {user id, customer id, role}.
+# merged_server reads it at import time and falls back to a placeholder that is
+# public in the git repo -- so without this, every Windows appliance would sign
+# tokens with a known key and anyone on the customer's LAN could mint a
+# superadmin token. The .deb gets a random secret from its postinst; this is the
+# equivalent for the Windows .exe (and for running from source). Generated once
+# per install and persisted so existing logins survive a restart.
+if not os.environ.get("AUTH_SECRET"):
+    import secrets
+
+    _secret_file = os.path.join(os.environ["THICKNESS_DATA_DIR"], "auth_secret.txt")
+    try:
+        with open(_secret_file) as f:
+            _secret = f.read().strip()
+    except OSError:
+        _secret = ""
+    if not _secret:
+        _secret = secrets.token_hex(32)
+        try:
+            with open(_secret_file, "w") as f:
+                f.write(_secret)
+            os.chmod(_secret_file, 0o600)
+        except OSError:
+            # Read-only data dir: still use a strong per-run secret rather than
+            # the public placeholder. Logins won't survive a restart, but they
+            # can never be forged.
+            pass
+    os.environ["AUTH_SECRET"] = _secret
+
 # --- SQLite shim: must be installed before merged_server is imported ---------
 sys.path.insert(0, BASE_DIR)
 import local_db  # noqa: E402

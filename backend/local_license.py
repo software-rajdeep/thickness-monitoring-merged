@@ -48,6 +48,33 @@ def _b64d(s):
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
+def _windows_machine_id():
+    """Windows counterpart of /etc/machine-id: the MachineGuid the OS writes at
+    install time. Stable across reboots, driver updates and NIC changes.
+
+    This must NOT fall back to uuid.getnode(): on a box with no adapter Windows
+    considers 'suitable' (common on WiFi-only mini-PCs), getnode() returns a
+    synthetic local-only node with the multicast bit set rather than a real MAC,
+    and that value is not guaranteed to survive a reboot. Binding a license to
+    it would silently lock the customer out of their own appliance.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for access in (winreg.KEY_READ | winreg.KEY_WOW64_64KEY, winreg.KEY_READ):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Cryptography", 0, access) as k:
+                guid = winreg.QueryValueEx(k, "MachineGuid")[0]
+            guid = (guid or "").strip()
+            if guid:
+                return guid
+        except OSError:
+            continue
+    return None
+
+
 def machine_code():
     """Stable per-machine code derived from the OS machine id."""
     mid = None
@@ -59,8 +86,10 @@ def machine_code():
                 break
         except OSError:
             continue
+    if not mid and os.name == "nt":
+        mid = _windows_machine_id()
     if not mid:
-        mid = f"mac-{uuid.getnode():012x}"   # fallback (also used on Windows dev boxes)
+        mid = f"mac-{uuid.getnode():012x}"   # last resort (non-Windows dev boxes)
     digest = hashlib.sha256(f"{_PRODUCT_SALT}::{mid}".encode()).hexdigest().upper()[:16]
     return "-".join(digest[i:i + 4] for i in range(0, 16, 4))
 
