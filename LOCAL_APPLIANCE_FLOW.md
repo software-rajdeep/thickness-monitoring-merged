@@ -10,11 +10,59 @@ database, dashboard, logins, CSV export — lives on that one box on their LAN.
 
 | Piece | Where |
 |---|---|
-| App source | `backend/local_main.py` (entry), `backend/local_db.py` (SQLite), `backend/local_license.py` (activation) |
-| Build script | `local/build-local-deb.sh` → `thickness-local_<ver>_<arch>.deb` |
-| License tool | `tools/local_license_tool.py` (warehouse only) |
+| App source (Linux) | `backend/local_main.py` (entry), `backend/local_db.py` (SQLite), `backend/local_license.py` (activation) |
+| App source (Windows) | `backend/local_gui.py` (windowed entry → wraps `local_main`) |
+| Build script (Linux) | `local/build-local-deb.sh` → `thickness-local_<ver>_<arch>.deb` |
+| Build spec (Windows) | `local/thickness-local.spec` → `local/dist/thickness-local.exe` |
+| License tool (CLI) | `tools/local_license_tool.py` (warehouse only) |
+| License app (GUI) | `tools/license_app.py` / `tools/dist/license-studio.exe` (warehouse only) |
 | Signing key + registry | `~/thickness-license-keys/` on the warehouse machine — **NOT in git** |
 | Public key (ships in app) | `backend/license_pubkey.txt` (committed) |
+
+---
+
+## Windows appliance (`thickness-local.exe`)
+
+The Windows build is the same offline server as the `.deb`, packaged as a
+**no-terminal desktop app** for customers who run the appliance on a Windows box.
+
+- **Entry point:** `backend/local_gui.py` (the `.deb` still uses
+  `backend/local_main.py`; the two never interfere). The spec is built
+  `console=False`, so **no terminal window ever appears** — all server output
+  goes to `%ProgramData%\ThicknessLocal\thickness-local.log`.
+- **On double-click it:** starts the server, waits for it to come up, opens the
+  dashboard in the default browser (`http://localhost:5002`), and drops a
+  **system-tray icon** with: *Open dashboard*, the shareable **LAN link**
+  (`http://<this-pc-ip>:5002`), *Copy network link*, *Enable network sharing*,
+  and *Quit*.
+- **LAN sharing:** the server already binds `0.0.0.0`, so any device on the same
+  router can open the LAN link and watch live readings (they are really talking
+  to this box, which owns the sensors). The **inbound Windows Firewall rule**
+  needs admin once — click **tray → "Enable network sharing"** and accept the
+  single UAC prompt. After that, everyone on the router can view it.
+- **Build (on Windows, with the repo's build venv):**
+  ```bash
+  cd local && ../local/.build-venv-win/Scripts/pyinstaller --noconfirm thickness-local.spec
+  # → local/dist/thickness-local.exe
+  ```
+  (Run `npx vite build --mode localapp` first if the frontend changed — the spec
+  bundles `../dist`.)
+- Licensing/activation is identical to the `.deb`: open the dashboard, read the
+  machine code off the activation page, issue a card, paste it in.
+
+## License app (`license-studio.exe`) — internal
+
+`tools/license_app.py` is a no-terminal desktop GUI (the counterpart of item #1
+for our own team) that generates the **activation card we hand each customer** —
+company, machine code, mode, term → signs the license and shows a printable card
+with the license code + dashboard login, ready to Copy / Save / Print. It shares
+the exact signing logic with the CLI via `local_license_tool.issue()`, so both
+produce identical cards and registry entries.
+
+- **Runs on OUR machine only** — it reads the private signing key from
+  `~/thickness-license-keys` (default) at runtime; the key is **never** embedded
+  in the exe.
+- **Build:** `cd tools && ../local/.build-venv-win/Scripts/pyinstaller --noconfirm license_app.spec` → `tools/dist/license-studio.exe`.
 
 ---
 

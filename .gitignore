@@ -47,3 +47,5 @@ backend/venv/
 backend/email_alert_config.json
 .vercel
 local/build/
+tools/build/
+tools/__pycache__/
