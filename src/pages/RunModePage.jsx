@@ -341,12 +341,14 @@ export default function RunModePage({
           </div>
           <div style={{ fontSize: 12, color: "var(--text-2)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>
             {calibrationActive
-              ? `Baseline captured at ${calibrationCapturedAt ? new Date(calibrationCapturedAt).toLocaleString() : "—"}. The displayed thickness is offset from that captured reading.`
+              ? `Baseline captured at ${calibrationCapturedAt ? new Date(calibrationCapturedAt).toLocaleString() : "-"}. The displayed thickness is offset from that captured reading.`
               : "Use calibration to offset the live display from a known reference thickness."}
           </div>
           {calibrationActive && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {Object.entries(calibrationBaselines).map(([sid, value]) => (
+              {Object.entries(calibrationBaselines)
+                .filter(([sid]) => sensorOrder.includes(sid))
+                .map(([sid, value]) => (
                 <span
                   key={sid}
                   style={{
