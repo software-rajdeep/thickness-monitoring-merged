@@ -20,5 +20,11 @@
         "averaging": 64,
         "output_polarity": "Light_ON",
         "sampling_period": "500us"
+    },
+    "sensor_R": {
+        "alarm_output": "Clamp",
+        "averaging": 64,
+        "output_polarity": "Light_ON",
+        "sampling_period": "500us"
     }
 }

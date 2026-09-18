@@ -4,12 +4,18 @@ import { ROLE_ACCESS, ROLE_COLOR } from "../constants/roles";
 import AccessDenied from "../components/AccessDenied";
 import Spinner from "../components/Spinner";
 import { authHeaders } from "../constants/auth";
-import { SERVER, DEFAULT_SERVER, setServerBase } from "../constants/config";
+import { SERVER } from "../constants/config";
 
-export default function BackendPage({ user }) {
+export default function BackendPage({ user, sensorMode }) {
   if (!ROLE_ACCESS[user.role]?.includes("backend")) return <AccessDenied />;
 
   const canManageUsers = user.role === "superadmin" || user.role === "admin";
+
+  // Reference-mode sensor setup only applies to "side by side with reference".
+  // Other modes open the plain (measurement-only) setup page unchanged.
+  const setupUrl = sensorMode === "sbs-reference"
+    ? "/sensor_setup.html?mode=reference"
+    : "/sensor_setup.html";
 
   const [users,      setUsers]      = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -19,29 +25,10 @@ export default function BackendPage({ user }) {
   const [adding,     setAdding]     = useState(false);
   const [deleting,   setDeleting]   = useState(null);
   const [toast,      setToast]      = useState(null);
-  const [apiBase,    setApiBase]    = useState(() => SERVER);
 
   function showToast(msg, type = "success") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
-  }
-
-  function handleApiSave() {
-    const next = apiBase.trim();
-    if (!next) {
-      showToast("Server URL is required", "error");
-      return;
-    }
-    setServerBase(next);
-    showToast("Server updated. Reloading…", "success");
-    setTimeout(() => window.location.reload(), 600);
-  }
-
-  function handleApiReset() {
-    setApiBase(DEFAULT_SERVER);
-    setServerBase(DEFAULT_SERVER);
-    showToast("Server reset to default. Reloading…", "success");
-    setTimeout(() => window.location.reload(), 600);
   }
 
   async function fetchUsers() {
@@ -144,7 +131,6 @@ export default function BackendPage({ user }) {
         <div className="page-header-row">
           <div>
             <div className="page-title">Backend Access</div>
-            <div className="page-sub">SYSTEM ADMINISTRATION</div>
           </div>
           <span className={`role-badge ${ROLE_COLOR[user.role]}`}>
             {user.role}
@@ -299,7 +285,7 @@ export default function BackendPage({ user }) {
               <tr>
                 <td className="td-mono">sensor_filtered_readings</td>
                 <td className="td-mono">
-                  {dbStatus ? dbStatus.filtered.toLocaleString() : "—"}
+                  {dbStatus ? dbStatus.filtered.toLocaleString() : "-"}
                 </td>
                 <td className="td-mono">
                   {srvConfig ? srvConfig.limit_filtered.toLocaleString() : "10,000,000"}
@@ -313,7 +299,7 @@ export default function BackendPage({ user }) {
               <tr>
                 <td className="td-mono">sensor_unfiltered_readings</td>
                 <td className="td-mono">
-                  {dbStatus ? dbStatus.unfiltered.toLocaleString() : "—"}
+                  {dbStatus ? dbStatus.unfiltered.toLocaleString() : "-"}
                 </td>
                 <td className="td-mono">
                   {srvConfig ? srvConfig.limit_unfiltered.toLocaleString() : "1,000,000"}
@@ -327,82 +313,13 @@ export default function BackendPage({ user }) {
               <tr>
                 <td className="td-mono">users</td>
                 <td className="td-mono">
-                  {dbStatus ? dbStatus.users : "—"}
+                  {dbStatus ? dbStatus.users : "-"}
                 </td>
-                <td className="td-mono">—</td>
+                <td className="td-mono">-</td>
                 <td><span className="badge badge-green">Healthy</span></td>
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
-
-      {/* API CONNECTION */}
-      <div className="section">
-        <div className="section-header">
-          <span className="section-title">API Connection</span>
-        </div>
-        <div style={{
-          background: "var(--bg2)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--r2)",
-          padding: "16px 18px",
-          display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          alignItems: "flex-end",
-        }}>
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.8px" }}>
-              Backend URL
-            </div>
-            <input
-              className="form-input"
-              value={apiBase}
-              onChange={e => setApiBase(e.target.value)}
-              placeholder={DEFAULT_SERVER}
-            />
-            <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 6, fontFamily: "var(--mono)" }}>
-              Example: http://192.168.1.2:5000
-            </div>
-          </div>
-          <button className="btn btn-blue" onClick={handleApiSave}>
-            <Ic.Check /> Save URL
-          </button>
-          <button className="btn btn-outline" onClick={handleApiReset}>
-            Reset
-          </button>
-        </div>
-      </div>
-
-      {/* SERVER CONFIGURATION */}
-      <div className="section">
-        <div className="section-header">
-          <span className="section-title">Server Configuration</span>
-          <button className="btn btn-outline btn-sm" onClick={fetchServerConfig}>
-            <Ic.Refresh /> Refresh
-          </button>
-        </div>
-        <div className="code-block">
-          {srvConfig ? (
-            <pre style={{ margin: 0 }}>{`SENSOR_CONFIGS = {
-${Object.entries(srvConfig.sensor_configs).map(([k, v]) =>
-  `  "${k}": {"ip": "${v.ip}", "port": ${v.port}}`
-).join(',\n')}
-}
-
-SERVER_PORT      = ${srvConfig.server_port}
-SENSOR_TIMEOUT   = ${srvConfig.sensor_timeout}
-LIMIT_FILTERED   = ${srvConfig.limit_filtered.toLocaleString()}
-LIMIT_UNFILTERED = ${srvConfig.limit_unfiltered.toLocaleString()}
-DB_HOST          = ${srvConfig.db_host}
-DB_NAME          = ${srvConfig.db_name}`}
-            </pre>
-          ) : (
-            <span style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 12 }}>
-              Loading server configuration…
-            </span>
-          )}
         </div>
       </div>
 
@@ -423,13 +340,9 @@ DB_NAME          = ${srvConfig.db_name}`}
             gap: 12,
             flexWrap: "wrap",
           }}>
-            <div style={{ fontSize: 13, color: "var(--text-2)" }}>
-              Add, remove, or re-point sensor IP/port/name. Opens in a new tab and
-              takes effect immediately, no restart needed.
-            </div>
             <button
               className="btn btn-blue"
-              onClick={() => window.open("/sensor_setup.html", "_blank")}
+              onClick={() => window.open(setupUrl, "_blank")}
             >
               <Ic.Wifi /> Open Sensor Setup
             </button>

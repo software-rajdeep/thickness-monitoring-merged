@@ -139,39 +139,58 @@ def activation_card(payload, code, admin_password):
     return "\n".join(lines)
 
 
-def cmd_issue(args):
+def issue(keydir, customer, mode="opposite", machine=None, any_machine=False,
+          days=None, expires=None, admin_username="admin", admin_password=None,
+          note="", out=None):
+    """Sign one license and record it in the registry.
+
+    Shared by the CLI (cmd_issue) and the GUI app (tools/license_app.py) so both
+    produce byte-identical cards and registry entries. Returns a dict with the
+    signed ``code``, the printable ``card``, the ``payload``, the generated
+    ``admin_password`` (plaintext, for the card) and the ``saved_path`` if any.
+
+    Raises ValueError for bad input so callers can show a friendly message
+    instead of the CLI's sys.exit.
+    """
     from werkzeug.security import generate_password_hash
-    private = load_private_key(args.keydir)
+    private = load_private_key(keydir)
 
-    machine = (args.machine or "").strip().upper()
-    if not machine and not args.any_machine:
-        sys.exit("Provide --machine XXXX-XXXX-XXXX-XXXX (shown on the appliance's "
-                 "activation page) or --any-machine to skip machine binding.")
-    expires = None
-    if args.days:
-        expires = (datetime.date.today() + datetime.timedelta(days=args.days)).isoformat()
-    if args.expires:
-        expires = args.expires
+    customer = (customer or "").strip()
+    if not customer:
+        raise ValueError("Company name is required.")
+    machine = (machine or "").strip().upper()
+    if not machine and not any_machine:
+        raise ValueError("Enter the machine code shown on the appliance's "
+                         "activation page, or choose 'any machine'.")
+    if mode not in ("opposite", "sbs"):
+        raise ValueError("Mode must be 'opposite' or 'sbs'.")
 
-    admin_password = args.admin_password or secrets.token_urlsafe(9)
+    exp = None
+    if days:
+        exp = (datetime.date.today() + datetime.timedelta(days=int(days))).isoformat()
+    if expires:
+        exp = expires
+
+    admin_password = admin_password or secrets.token_urlsafe(9)
     payload = {
         "v": 1,
         "license_id": "lic_" + secrets.token_hex(4),
-        "customer": args.customer.strip(),
-        "sensor_mode": args.mode,
+        "customer": customer,
+        "sensor_mode": mode,
         "machine_code": machine or "*",
         "issued_at": datetime.date.today().isoformat(),
-        "expires_at": expires,
-        "admin_username": args.admin_username,
-        "admin_password_hash": generate_password_hash(admin_password),
+        "expires_at": exp,
+        "admin_username": admin_username or "admin",
+        # Pin to pbkdf2:sha256 so the Android appliance can verify the seeded admin
+        # password natively (PBKDF2WithHmacSHA256). Werkzeug's default (scrypt) is
+        # impractical on Android; pbkdf2 is still verified fine by the laptop too.
+        "admin_password_hash": generate_password_hash(admin_password, method="pbkdf2:sha256"),
     }
     payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     code = f"{CODE_PREFIX}.{b64u(payload_bytes)}.{b64u(private.sign(payload_bytes))}"
-
     card = activation_card(payload, code, admin_password)
-    print(card)
 
-    entries = load_registry(args.keydir)
+    entries = load_registry(keydir)
     entries.append({
         "license_id": payload["license_id"],
         "customer": payload["customer"],
@@ -179,19 +198,41 @@ def cmd_issue(args):
         "machine_code": payload["machine_code"],
         "issued_at": payload["issued_at"],
         "expires_at": payload["expires_at"],
-        "note": args.note or "",
+        "note": note or "",
     })
-    save_registry(args.keydir, entries)
+    save_registry(keydir, entries)
 
-    if args.out:
-        os.makedirs(args.out, exist_ok=True)
-        slug = "".join(c if c.isalnum() else "_" for c in args.customer.lower())
-        path = os.path.join(args.out, f"license_{slug}_{payload['license_id']}.txt")
-        with open(path, "w") as f:
+    saved_path = None
+    if out:
+        os.makedirs(out, exist_ok=True)
+        slug = "".join(c if c.isalnum() else "_" for c in customer.lower())
+        saved_path = os.path.join(out, f"license_{slug}_{payload['license_id']}.txt")
+        with open(saved_path, "w") as f:
             f.write(card)
-        print(f"[card saved to {path}]")
+
+    return {"code": code, "card": card, "payload": payload,
+            "admin_password": admin_password, "saved_path": saved_path,
+            "count": len(entries)}
+
+
+def cmd_issue(args):
+    machine = (args.machine or "").strip().upper()
+    if not machine and not args.any_machine:
+        sys.exit("Provide --machine XXXX-XXXX-XXXX-XXXX (shown on the appliance's "
+                 "activation page) or --any-machine to skip machine binding.")
+    try:
+        res = issue(args.keydir, args.customer, mode=args.mode, machine=machine,
+                    any_machine=args.any_machine, days=args.days, expires=args.expires,
+                    admin_username=args.admin_username, admin_password=args.admin_password,
+                    note=args.note, out=args.out)
+    except ValueError as e:
+        sys.exit(str(e))
+
+    print(res["card"])
+    if res["saved_path"]:
+        print(f"[card saved to {res['saved_path']}]")
     print(f"[registry updated: {registry_path(args.keydir)} — "
-          f"{len(entries)} license(s) issued to date]")
+          f"{res['count']} license(s) issued to date]")
 
 
 def cmd_list(args):

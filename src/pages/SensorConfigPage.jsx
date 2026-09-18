@@ -4,7 +4,7 @@ import { ROLE_ACCESS } from "../constants/roles";
 import AccessDenied from "../components/AccessDenied";
 import Spinner from "../components/Spinner";
 import { authHeaders } from "../constants/auth";
-import { SERVER } from "../constants/config";
+import { SERVER, SENSOR_CONFIGS } from "../constants/config";
 
 const REG = {
   sampling:  { addr_h: "0x40", addr_l: "0x06" },
@@ -13,7 +13,7 @@ const REG = {
   alarm:     { addr_h: "0x40", addr_l: "0x0C" },
 };
 
-const SP_VALS  = ["0x00","0x01","0x02","0x03","0x0A"];
+const SP_VALS  = ["0x00","0x01","0x02","0x03","0x04"];
 const SP_LABEL = ["500us","1000us","2000us","4000us","AUTO"];
 const SP_JSON  = ["500us","1000us","2000us","4000us","AUTO"];
 
@@ -27,7 +27,21 @@ const OP_LABEL = ["Light_ON","Dark_ON"];
 const AL_VALS  = ["0x00","0x01"];
 const AL_LABEL = ["Clamp","Hold"];
 
-const SENSOR_IDS = ["A","B","C"];
+// Sensors actually configured on THIS appliance (1, 2 or 3) — never assume A/B/C.
+// With fewer sensors, writing hardware settings to non-existent ones fails and
+// makes "Save to All Sensors" look broken. Read the live network config instead.
+async function activeSensorIds() {
+  try {
+    const res = await fetch(`${SERVER}/config/network`, { headers: authHeaders() });
+    if (res.ok) {
+      const cfg = await res.json();
+      const ids = Object.keys(cfg).map(s => s.toUpperCase());
+      if (ids.length) return ids;
+    }
+  } catch { /* fall back below */ }
+  const fromConst = Object.keys(SENSOR_CONFIGS).map(s => s.toUpperCase());
+  return fromConst.length ? fromConst : ["A", "B"];
+}
 
 export default function SensorConfigPage({ user, onToast }) {
   if (!ROLE_ACCESS[user.role]?.includes("sensor-config")) return <AccessDenied />;
@@ -71,7 +85,7 @@ export default function SensorConfigPage({ user, onToast }) {
 
       // Load from first available sensor; all should be identical
       let loaded = false;
-      for (const sid of SENSOR_IDS) {
+      for (const sid of await activeSensorIds()) {
         const key = `sensor_${sid}`;
         if (!cfg[key]) continue;
         const s = cfg[key];
@@ -85,7 +99,7 @@ export default function SensorConfigPage({ user, onToast }) {
         break;
       }
       if (!loaded) {
-        addLog("No sensor config found in file — using defaults", "inf");
+        addLog("No sensor config found in file - using defaults", "inf");
       }
       addLog("Config loaded from server", "ok");
       onToast("Configuration loaded", "success");
@@ -106,10 +120,10 @@ export default function SensorConfigPage({ user, onToast }) {
   }
 
   // ── UPDATE JSON FILE FOR ALL SENSORS ─────────────────────────────────────
-  async function updateAllJSON(spIdx, avIdx, opIdx, alIdx) {
+  async function updateAllJSON(ids, spIdx, avIdx, opIdx, alIdx) {
     const getRes = await fetch(`${SERVER}/config/file`, { headers: authHeaders() });
     const cfg    = await getRes.json();
-    for (const sid of SENSOR_IDS) {
+    for (const sid of ids) {
       const key = `sensor_${sid}`;
       if (!cfg[key]) cfg[key] = {};
       cfg[key].sampling_period = SP_JSON[spIdx];
@@ -125,10 +139,10 @@ export default function SensorConfigPage({ user, onToast }) {
   }
 
   // ── WRITE CONFIG TO ALL SENSORS ──────────────────────────────────────────
-  async function writeAllSensors(spIdx, avIdx, opIdx, alIdx) {
+  async function writeAllSensors(ids, spIdx, avIdx, opIdx, alIdx) {
     let allOk = true;
 
-    for (const sid of SENSOR_IDS) {
+    for (const sid of ids) {
       try {
         addLog(`[${sid}] Writing Sampling → ${SP_LABEL[spIdx]}`, "inf");
         const r1 = await writeOneHW(sid, REG.sampling.addr_h, REG.sampling.addr_l, SP_VALS[spIdx]);
@@ -170,10 +184,13 @@ export default function SensorConfigPage({ user, onToast }) {
     const opIdx = parseInt(sharedConfig.polarity);
     const alIdx = parseInt(sharedConfig.alarm);
 
-    let allOk = await writeAllSensors(spIdx, avIdx, opIdx, alIdx);
+    const ids = await activeSensorIds();
+    addLog(`Applying to sensor(s): ${ids.join(", ")}`, "inf");
+
+    let allOk = await writeAllSensors(ids, spIdx, avIdx, opIdx, alIdx);
 
     if (allOk) {
-      await updateAllJSON(spIdx, avIdx, opIdx, alIdx);
+      await updateAllJSON(ids, spIdx, avIdx, opIdx, alIdx);
     }
 
     try {
@@ -193,7 +210,7 @@ export default function SensorConfigPage({ user, onToast }) {
 
     addLog("──── Save All complete ────", "sys");
     setSaving(false);
-    onToast(allOk ? "Configuration saved successfully" : "Some writes failed — check log", allOk ? "success" : "error");
+    onToast(allOk ? "Configuration saved successfully" : "Some writes failed - check log", allOk ? "success" : "error");
   }
 
   // ── APPLY STREAM RATE ────────────────────────────────────────────────────
@@ -252,7 +269,6 @@ export default function SensorConfigPage({ user, onToast }) {
         <div className="page-header-row">
           <div>
             <div className="page-title">Sensor Configuration</div>
-            <div className="page-sub">HARDWARE PARAMETERS · CD22 SERIES · SHARED ACROSS ALL SENSORS</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-outline" onClick={loadConfig}>
@@ -297,23 +313,6 @@ export default function SensorConfigPage({ user, onToast }) {
                 </select>
               </div>
             ))}
-
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                paddingTop: 12,
-                display: "flex",
-                gap: 8,
-                fontFamily: "var(--mono)",
-                fontSize: 12,
-                color: "var(--text-3)",
-              }}
-            >
-              <Ic.Check />
-              <span>
-                These settings will be applied to sensors <strong>A</strong>, <strong>B</strong> and <strong>C</strong> simultaneously.
-              </span>
-            </div>
           </div>
         </div>
 

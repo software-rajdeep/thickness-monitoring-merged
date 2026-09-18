@@ -48,7 +48,7 @@ export default function DownloadPage({ user, onToast }) {
       onToast(`${type === "filtered" ? "Filtered" : "Raw"} data exported successfully`, "success");
 
     } catch {
-      onToast("Network error — is backend running?", "error");
+      onToast("Network error - is backend running?", "error");
     }
 
     setDl(false);
@@ -62,27 +62,7 @@ export default function DownloadPage({ user, onToast }) {
         <div className="page-header-row">
           <div>
             <div className="page-title">Download Data</div>
-            <div className="page-sub">EXPORT SENSOR READINGS · CSV FORMAT</div>
           </div>
-        </div>
-      </div>
-
-      {/* INFO */}
-      <div style={{ padding: "0 32px", marginBottom: 20 }}>
-        <div style={{
-          background:   "var(--blue-ghost)",
-          border:       "1px solid rgba(59,85,168,0.2)",
-          borderRadius: "var(--r)",
-          padding:      "10px 14px",
-          fontSize:     12,
-          color:        "var(--text-2)",
-          fontFamily:   "var(--mono)",
-          display:      "flex",
-          alignItems:   "center",
-          gap:          8,
-        }}>
-          <Ic.Database />
-          All data exported directly from PostgreSQL database
         </div>
       </div>
 
@@ -103,10 +83,6 @@ export default function DownloadPage({ user, onToast }) {
             </div>
             <h3>Thickness Data</h3>
           </div>
-          <p>
-            Calculated thickness from opposite-side sensor readings.
-            Columns: id, timestamp, sensor A, sensor B, thickness.
-          </p>
           <button
             className="btn btn-blue"
             style={{ width: "100%", justifyContent: "center", marginTop: 8 }}
@@ -135,10 +111,6 @@ export default function DownloadPage({ user, onToast }) {
             </div>
             <h3>Raw Thickness Data</h3>
           </div>
-          <p>
-            Full-resolution raw thickness readings from opposite-side sensors.
-            Each row is a single ~4ms measurement with thickness calculated in real time.
-          </p>
           <button
             className="btn btn-green"
             style={{ width: "100%", justifyContent: "center", marginTop: 8 }}

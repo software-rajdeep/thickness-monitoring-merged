@@ -7,3 +7,6 @@ Werkzeug
 itsdangerous
 requests
 cryptography
+# Windows desktop launcher (backend/local_gui.py): tray icon + generated icon image.
+pystray
+Pillow

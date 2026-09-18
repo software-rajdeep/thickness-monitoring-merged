@@ -30,6 +30,11 @@ import sqlite3
 import threading
 import types
 
+# The Rajdeep service superadmin gets this high reserved id so it never occupies
+# id 1 — real (customer) users are numbered from 1 and the service account is
+# excluded from user listings and counts.
+SERVICE_ACCOUNT_ID = 1_000_000
+
 # --- timestamp round-tripping -------------------------------------------------
 # Store datetimes as ISO-8601 ('T' separator, matches datetime.isoformat() used
 # by the query parameters elsewhere in the app); parse TIMESTAMP columns back
@@ -191,12 +196,14 @@ CREATE TABLE IF NOT EXISTS sensor_filtered_readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TIMESTAMP DEFAULT (datetime('now','localtime')),
     sensor_a REAL, sensor_b REAL, sensor_c REAL,
+    error REAL,
     device_id TEXT DEFAULT 'dev_legacy'
 );
 CREATE TABLE IF NOT EXISTS sensor_unfiltered_readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TIMESTAMP DEFAULT (datetime('now','localtime')),
     sensor_a REAL, sensor_b REAL, sensor_c REAL,
+    error REAL,
     device_id TEXT DEFAULT 'dev_legacy'
 );
 CREATE TABLE IF NOT EXISTS opposite_thickness_readings (
@@ -239,9 +246,12 @@ def _seed_service_account(conn):
         return
     from werkzeug.security import generate_password_hash
     password = secrets.token_urlsafe(12)
+    # Service account uses a high reserved id so it never occupies id 1 and real
+    # (customer) users can be numbered from 1. Reserved band starts at 1_000_000.
     cur.execute(
-        "INSERT INTO users (username, email, password_hash, role, customer_id) VALUES (?,?,?,?,NULL)",
-        ("superadmin", None, generate_password_hash(password), "superadmin"))
+        "INSERT INTO users (id, username, email, password_hash, role, customer_id) "
+        "VALUES (?,?,?,?,?,NULL)",
+        (SERVICE_ACCOUNT_ID, "superadmin", None, generate_password_hash(password), "superadmin"))
     conn.commit()
     note = os.path.join(os.path.dirname(db_path()), "service_login.txt")
     with open(note, "w") as f:

@@ -48,7 +48,7 @@ export default function LoginPage({ onLogin }) {
         <div className="login-header">
           <div className="login-logo-wrap">
             <div className="login-mark"><Ic.Logo /></div>
-            <span className="login-title">THICKNESSMONITORING</span>
+            <span className="login-rajdeep">RAJDEEP</span>
           </div>
           <div className="login-sub">CD22 OPPOSITE SENSORS SYSTEM</div>
         </div>

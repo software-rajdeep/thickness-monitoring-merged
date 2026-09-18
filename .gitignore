@@ -49,3 +49,5 @@ backend/email_alert_config.json
 local/build/
 tools/build/
 tools/__pycache__/
+build/
+local/.build-venv-win/

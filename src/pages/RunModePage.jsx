@@ -18,6 +18,9 @@ export default function RunModePage({
   runModeVisitKey,
   thicknessLimit,
   setThicknessLimit,
+  referenceMode,
+  referenceLimit,
+  setReferenceLimit,
 }) {
   if (!ROLE_ACCESS[user.role]?.includes("run-mode")) return <AccessDenied />;
 
@@ -27,15 +30,25 @@ export default function RunModePage({
   const [calibrationError, setCalibrationError] = useState("");
   const calibrationActive = Boolean(thicknessState?.calibration_active);
   const calibrationReferenceThickness = thicknessState?.calibration_reference_thickness ?? 0;
-  const calibrationCapturedAt = thicknessState?.calibration_captured_at;
   const calibrationBaselines = thicknessState?.calibration_baseline_readings || {};
   const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed);
   const sensorOrder = Object.keys(SENSOR_CONFIGS);
-  const sensorKeys = { A: "a", B: "b", C: "c" };
+  const sensorKeys = { A: "a", B: "b", C: "c", R: "r" };
+  const REFERENCE_ID = "B";
+  const isReference = (sid) => Boolean(referenceMode) && sid === REFERENCE_ID;
+  // Reference mode shows the user's configured sensor name (set in sensor setup);
+  // other modes keep the original "Sensor A / B / ..." labels.
+  const sensorLabel = (sid) => {
+    if (referenceMode && SENSOR_CONFIGS[sid]?.name) return SENSOR_CONFIGS[sid].name;
+    return `Sensor ${sid}`;
+  };
+
+  const { active: refLimitActive, min: refMinLimit, max: refMaxLimit } = referenceLimit;
 
   const canvasA = useRef(null);
   const canvasB = useRef(null);
   const canvasC = useRef(null);
+  const canvasR = useRef(null);
 
   const WINDOW = 100;
 
@@ -110,10 +123,27 @@ export default function RunModePage({
     return "var(--blue)";
   }
 
+  function getRefColor(v) {
+    if (v === null || v === undefined) return "var(--text-3)";
+    if (!refLimitActive) return "var(--blue)";
+    const n  = parseFloat(v);
+    const mn = parseFloat(refMinLimit);
+    const mx = parseFloat(refMaxLimit);
+    if (!isNaN(mn) && n < mn) return "var(--red)";
+    if (!isNaN(mx) && n > mx) return "var(--red)";
+    return "var(--blue)";
+  }
+
   function fmtVal(v) {
     if (v === null || v === undefined)
-      return <span style={{ color: "var(--text-3)" }}>—</span>;
+      return <span style={{ color: "var(--text-3)" }}>-</span>;
     return <span style={{ color: getColor(v) }}>{v}</span>;
+  }
+
+  function fmtRefVal(v) {
+    if (v === null || v === undefined)
+      return <span style={{ color: "var(--text-3)" }}>-</span>;
+    return <span style={{ color: getRefColor(v) }}>{v}</span>;
   }
 
   function isOnline(key) {
@@ -122,11 +152,21 @@ export default function RunModePage({
     return latest[key] !== null && latest[key] !== undefined;
   }
 
-  function drawGraph(canvas, dataKey, transform = v => v) {
+  function drawGraph(canvas, dataKey, transform = v => v, limit = {}) {
     if (!canvas) return;
     const ctx   = canvas.getContext("2d");
-    const W     = canvas.width;
-    const H     = canvas.height;
+    // Render at the display resolution (CSS size x devicePixelRatio) so the
+    // graph is crisp instead of upscaled/blurry.
+    const dpr   = window.devicePixelRatio || 1;
+    const W     = canvas.clientWidth  || canvas.width;
+    const H     = canvas.clientHeight || canvas.height;
+    const pxW   = Math.round(W * dpr);
+    const pxH   = Math.round(H * dpr);
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width  = pxW;
+      canvas.height = pxH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const slice = [...rows].reverse().slice(0, WINDOW);
     const vals  = slice.map(r => {
       const raw = parseFloat(r[dataKey]);
@@ -143,8 +183,8 @@ export default function RunModePage({
       return;
     }
 
-    const mn    = parseFloat(minLimit);
-    const mx    = parseFloat(maxLimit);
+    const mn    = parseFloat(limit.min);
+    const mx    = parseFloat(limit.max);
     const min   = Math.min(...vals) - 0.5;
     const max   = Math.max(...vals) + 0.5;
     const pad   = { top: 10, bottom: 20, left: 36, right: 10 };
@@ -172,7 +212,7 @@ export default function RunModePage({
     }
 
     // Min limit line
-    if (limitActive && !isNaN(mn) && mn >= min && mn <= max) {
+    if (limit.active && !isNaN(mn) && mn >= min && mn <= max) {
       ctx.strokeStyle = "rgba(220,50,50,0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
@@ -184,7 +224,7 @@ export default function RunModePage({
     }
 
     // Max limit line
-    if (limitActive && !isNaN(mx) && mx >= min && mx <= max) {
+    if (limit.active && !isNaN(mx) && mx >= min && mx <= max) {
       ctx.strokeStyle = "rgba(220,50,50,0.6)";
       ctx.lineWidth   = 1;
       ctx.setLineDash([4, 4]);
@@ -204,28 +244,32 @@ export default function RunModePage({
       else         ctx.lineTo(x, y);
     });
     ctx.strokeStyle = "#3B55A8";
-    ctx.lineWidth   = 1.5;
+    ctx.lineWidth   = 2.5;
     ctx.stroke();
 
     // Dots
     vals.forEach((v, i) => {
-      const inLimit = !limitActive || (
+      const inLimit = !limit.active || (
         (isNaN(mn) || v >= mn) && (isNaN(mx) || v <= mx)
       );
       ctx.beginPath();
-      ctx.arc(xPos(i), yPos(v), 2, 0, Math.PI * 2);
+      ctx.arc(xPos(i), yPos(v), 3, 0, Math.PI * 2);
       ctx.fillStyle = inLimit ? "#3B55A8" : "#dc3232";
       ctx.fill();
     });
   }
 
   useEffect(() => {
-    const canvasMap = { A: canvasA, B: canvasB, C: canvasC };
+    const canvasMap = { A: canvasA, B: canvasB, C: canvasC, R: canvasR };
     sensorOrder.forEach((sid) => {
-      const key = sensorKeys[sid];
-      if (key) drawGraph(canvasMap[sid]?.current, key, v => applyCalibration(sid, v));
+      if (isReference(sid)) {
+        drawGraph(canvasMap[sid]?.current, "error", v => v, referenceLimit);
+      } else {
+        const key = sensorKeys[sid];
+        if (key) drawGraph(canvasMap[sid]?.current, key, v => applyCalibration(sid, v), thicknessLimit);
+      }
     });
-  }, [rows, limitActive, minLimit, maxLimit, sensorOrder, thicknessState]);
+  }, [rows, thicknessLimit, referenceLimit, sensorOrder, thicknessState]);
 
   // When sensors are offline, ignore the last (stale) row so live values
   // render as "-" instead of frozen numbers.
@@ -278,7 +322,6 @@ export default function RunModePage({
         <div className="page-header-row">
           <div>
             <div className="page-title">Live Run Mode</div>
-            <div className="page-sub">REAL-TIME THICKNESS · mm</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {live && connected && <div className="live-dot"><div className="dot" /> LIVE</div>}
@@ -339,11 +382,6 @@ export default function RunModePage({
               ? `Calibrated: ${formatThickness(calibrationReferenceThickness)} mm`
               : "Not Calibrated (0 mm)"}
           </div>
-          <div style={{ fontSize: 12, color: "var(--text-2)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>
-            {calibrationActive
-              ? `Baseline captured at ${calibrationCapturedAt ? new Date(calibrationCapturedAt).toLocaleString() : "-"}. The displayed thickness is offset from that captured reading.`
-              : "Use calibration to offset the live display from a known reference thickness."}
-          </div>
           {calibrationActive && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {Object.entries(calibrationBaselines)
@@ -364,7 +402,7 @@ export default function RunModePage({
                     color: "var(--text)",
                   }}
                 >
-                  Sensor {sid}: {value ?? "—"} mm
+                  {`${sensorLabel(sid)}`}: {value ?? "-"} mm
                 </span>
               ))}
             </div>
@@ -403,7 +441,7 @@ export default function RunModePage({
               style={{ width: 100, fontFamily: "var(--mono)" }}
             />
           </div>
-          <div style={{ color: "var(--text-3)", fontSize: 18, marginTop: 16 }}>—</div>
+          <div style={{ color: "var(--text-3)", fontSize: 18, marginTop: 16 }}>-</div>
           <div>
             <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)" }}>MAX (mm)</div>
             <input
@@ -426,28 +464,94 @@ export default function RunModePage({
               fontFamily: "var(--mono)",
               color: "var(--blue)",
             }}>
-              Active: {minLimit || "—"} mm → {maxLimit || "—"} mm
+              Active: {minLimit || "-"} mm → {maxLimit || "-"} mm
             </div>
           )}
         </div>
       </div>
 
+      {referenceMode && (
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Reference Error Limit</span>
+            <button
+              className={`btn btn-sm ${refLimitActive ? "btn-red" : "btn-outline"}`}
+              onClick={() => setReferenceLimit(prev => ({ ...prev, active: !prev.active }))}
+            >
+              {refLimitActive ? "Disable Limit" : "Enable Limit"}
+            </button>
+          </div>
+          <div style={{
+            background: "var(--bg2)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--r2)",
+            padding: "16px 18px",
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            flexWrap: "wrap",
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)" }}>MIN (mm)</div>
+              <input
+                type="number"
+                className="form-input"
+                placeholder="e.g. -0.5"
+                value={refMinLimit}
+                onChange={(event) => setReferenceLimit(prev => ({ ...prev, min: event.target.value }))}
+                style={{ width: 100, fontFamily: "var(--mono)" }}
+              />
+            </div>
+            <div style={{ color: "var(--text-3)", fontSize: 18, marginTop: 16 }}>-</div>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 5, fontFamily: "var(--mono)" }}>MAX (mm)</div>
+              <input
+                type="number"
+                className="form-input"
+                placeholder="e.g. 0.5"
+                value={refMaxLimit}
+                onChange={(event) => setReferenceLimit(prev => ({ ...prev, max: event.target.value }))}
+                style={{ width: 100, fontFamily: "var(--mono)" }}
+              />
+            </div>
+            {refLimitActive && (
+              <div style={{
+                marginLeft: "auto",
+                background: "var(--blue-ghost)",
+                border: "1px solid rgba(59,85,168,0.12)",
+                borderRadius: "var(--r)",
+                padding: "8px 14px",
+                fontSize: 12,
+                fontFamily: "var(--mono)",
+                color: "var(--blue)",
+              }}>
+                Active: {refMinLimit || "-"} mm → {refMaxLimit || "-"} mm
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="stats-grid">
         {sensorOrder.map((sid) => {
           const key = sensorKeys[sid];
           const raw = key ? latest?.[key] : undefined;
-          const value = applyCalibration(sid, raw ?? null);
+          const isRef = isReference(sid);
+          const value = isRef ? (latest?.error ?? null) : applyCalibration(sid, raw ?? null);
           const online = key ? isOnline(key) : false;
+          const color = isRef ? getRefColor(value) : getColor(value);
+          const label = sensorLabel(sid);
+          const sub   = isRef ? "mm · error (ref − baseline)" : "mm · latest thickness";
           return (
             <div key={sid} className="stat-card">
               <div className="stat-label">
                 <span className={`s-dot ${connected && online ? "on" : "off"}`} style={{ display: "inline-block" }} />
-                &nbsp;Sensor {sid}
+                &nbsp;{label}
               </div>
-              <div className="stat-val" style={{ fontSize: 28, color: getColor(value) }}>
-                {value ?? "—"}
+              <div className="stat-val" style={{ fontSize: 28, color }}>
+                {value ?? "-"}
               </div>
-              <div className="stat-sub">mm · latest thickness</div>
+              <div className="stat-sub">{sub}</div>
             </div>
           );
         })}
@@ -455,7 +559,7 @@ export default function RunModePage({
 
       <div className="section">
         <div className="section-header">
-          <span className="section-title">Live Graph — Last {WINDOW} Thickness Samples</span>
+          <span className="section-title">Live Graph - Last {WINDOW} Thickness Samples</span>
         </div>
         <div style={{
           display: "grid",
@@ -463,12 +567,15 @@ export default function RunModePage({
           gap: 14,
         }}>
           {sensorOrder.map((sid) => {
+            const isRef = isReference(sid);
             const key = sensorKeys[sid];
             const rawV = key ? latest?.[key] : undefined;
-            const calV = applyCalibration(sid, rawV ?? null);
+            const calV = isRef ? (latest?.error ?? null) : applyCalibration(sid, rawV ?? null);
             const online = key ? isOnline(key) : false;
-            const ref = sid === "A" ? canvasA : sid === "B" ? canvasB : canvasC;
-            const label = `Sensor ${sid}`;
+            const ref = sid === "A" ? canvasA : sid === "B" ? canvasB : sid === "C" ? canvasC : canvasR;
+            const label = sensorLabel(sid);
+            const color = isRef ? getRefColor(calV) : getColor(calV);
+            const suffix = isRef ? "mm error" : "mm thickness";
             return (
               <div key={label} style={{
                 background: "var(--bg2)", border: "1px solid var(--border)",
@@ -491,9 +598,9 @@ export default function RunModePage({
                   </span>
                   <span style={{
                     fontSize: 13, fontFamily: "var(--mono)",
-                    fontWeight: 700, color: getColor(calV),
+                    fontWeight: 700, color,
                   }}>
-                    {calV ?? "—"} mm thickness
+                    {calV ?? "-"} {suffix}
                   </span>
                 </div>
                 <canvas
@@ -524,7 +631,7 @@ export default function RunModePage({
             textAlign: "center", color: "var(--text-3)",
             fontFamily: "var(--mono)", fontSize: 13,
           }}>
-            No thickness data yet — waiting for sensor readings...
+            No thickness data yet - waiting for sensor readings...
           </div>
         ) : (
           <div className="table-wrap scroll-table">
@@ -534,7 +641,9 @@ export default function RunModePage({
                   <th style={{ width: 60 }}>#</th>
                   <th>Timestamp</th>
                   {sensorOrder.map((sid) => (
-                    <th key={sid} className="td-r">Sensor {sid} Thickness (mm)</th>
+                    <th key={sid} className="td-r">
+                      {isReference(sid) ? `${sensorLabel(sid)} Error (mm)` : `${sensorLabel(sid)} Thickness (mm)`}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -543,11 +652,16 @@ export default function RunModePage({
                   <tr key={r.id}>
                     <td className="td-mono td-dim">{r.id}</td>
                     <td className="td-mono td-dim" style={{ fontSize: 11 }}>{r.ts}</td>
-                    {sensorOrder.map((sid) => (
-                      <td key={sid} className="td-mono td-r">
-                        {fmtVal(applyCalibration(sid, r[sensorKeys[sid]] ?? null))}
-                      </td>
-                    ))}
+                    {sensorOrder.map((sid) => {
+                      const v = isReference(sid)
+                        ? r.error ?? null
+                        : applyCalibration(sid, r[sensorKeys[sid]] ?? null);
+                      return (
+                        <td key={sid} className="td-mono td-r">
+                          {isReference(sid) ? fmtRefVal(v) : fmtVal(v)}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>

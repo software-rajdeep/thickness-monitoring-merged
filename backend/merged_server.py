@@ -60,10 +60,23 @@ DB_TABLE_THICKNESS_RAW = "opposite_thickness_raw_readings"
 DB_TABLE_USERS = "users"
 DB_TABLE_USER_CALIBRATIONS = "user_calibrations"
 
+# Reference sensor (side-by-side with reference mode): a sensor that only
+# monitors the baseline/reference value. Its deviation from the calibrated
+# baseline is stored in the DB "error" column. Sensor B plays this role on
+# this appliance (A = measurement, B = reference).
+REFERENCE_SENSOR_ID = "B"
+ALL_SENSOR_IDS = ("A", "B", "C", "R")
+
 LIMIT_FILTERED = 10_000_000
 LIMIT_UNFILTERED = 1_000_000
 LIMIT_THICKNESS = 10_000_000
 LIMIT_THICKNESS_RAW = 1_000_000
+
+# Seconds between automatic circular-buffer maintenance runs. The background
+# maintenance thread enforces the per-table and per-device row caps on a fixed
+# timer (independent of the streaming loop), so the tables can never grow past
+# their limits even when no sensor data is flowing.
+DB_TRIM_INTERVAL = float(os.environ.get("DB_TRIM_INTERVAL", "60"))
 
 # --- MULTI-TENANT (SaaS) ---
 # Per-device row cap (applies per device_id, not per table). ~3M rows ≈ 7 days at
@@ -95,6 +108,7 @@ CONFIG_FILE_PATH = os.path.join(DATA_DIR, "sensor_config.json")
 NETWORK_CONFIG_FILE_PATH = os.path.join(DATA_DIR, "sensor_network.json")
 THICKNESS_STATE_FILE_PATH = os.path.join(DATA_DIR, "thickness_state.json")
 THICKNESS_LIMIT_FILE_PATH = os.path.join(DATA_DIR, "thickness_limit.json")
+REFERENCE_LIMIT_FILE_PATH = os.path.join(DATA_DIR, "reference_limit.json")
 
 # --- ZERO OFFSET ---
 ZERO_OFFSET_MM = 35.0
@@ -225,12 +239,12 @@ def default_thickness_state():
     return {
         "setup_ready": False,
         "captured_at": None,
-        "reference_readings": {"A": None, "B": None},
+        "reference_readings": {"A": None, "B": None, "C": None, "R": None},
         "calibration_completed": False,
         "calibration_active": False,
         "calibration_captured_at": None,
         "calibration_reference_thickness": 0.0,
-        "calibration_baseline_readings": {"A": None, "B": None},
+        "calibration_baseline_readings": {"A": None, "B": None, "C": None, "R": None},
         "gap_distance": 0.0,
         "auto_gap_active": False,
         "object_thickness": None,
@@ -321,6 +335,47 @@ def set_thickness_limit(new_limit):
     global thickness_limit
     thickness_limit = new_limit
     save_thickness_limit(new_limit)
+
+# --- REFERENCE LIMIT (global, separate from the thickness limit) ---
+# In "side by side with reference" mode the reference sensor's ERROR value has
+# its own min/max limit, independent of the A/B/C thickness limit.
+def default_reference_limit():
+    return {"active": False, "min": "", "max": ""}
+
+def load_reference_limit():
+    """Load the global reference (error) limit from JSON file."""
+    if not os.path.exists(REFERENCE_LIMIT_FILE_PATH):
+        return default_reference_limit()
+    try:
+        with open(REFERENCE_LIMIT_FILE_PATH, 'r') as file_handle:
+            loaded = json.load(file_handle)
+    except (json.JSONDecodeError, Exception):
+        return default_reference_limit()
+    limit = default_reference_limit()
+    limit["active"] = bool(loaded.get("active", False))
+    raw_min = loaded.get("min", "")
+    raw_max = loaded.get("max", "")
+    limit["min"] = "" if raw_min is None else str(raw_min)
+    limit["max"] = "" if raw_max is None else str(raw_max)
+    return limit
+
+def save_reference_limit(limit):
+    """Save the global reference (error) limit to JSON file."""
+    with open(REFERENCE_LIMIT_FILE_PATH, 'w') as file_handle:
+        json.dump(limit, file_handle, indent=4)
+
+def init_reference_limit_file():
+    if not os.path.exists(REFERENCE_LIMIT_FILE_PATH):
+        save_reference_limit(default_reference_limit())
+
+def get_reference_limit():
+    global reference_limit
+    return reference_limit
+
+def set_reference_limit(new_limit):
+    global reference_limit
+    reference_limit = new_limit
+    save_reference_limit(new_limit)
 
 def get_thickness_state():
     global thickness_state
@@ -444,6 +499,30 @@ def calculate_thickness(sensor_id, current_reading):
     offset = current - baseline
     return round(reference + offset, 3)
 
+def calculate_reference_error(ref_value, state):
+    """Reference sensor error = current reference reading − calibrated baseline.
+
+    Only meaningful once calibration is active and a reference baseline was
+    captured; returns None otherwise. A non-zero value means the reference
+    baseline has drifted (i.e. an error)."""
+    if ref_value is None:
+        return None
+    try:
+        ref = float(ref_value)
+    except (TypeError, ValueError):
+        return None
+    if not state.get("calibration_active", False):
+        return None
+    baselines = state.get("calibration_baseline_readings", {})
+    baseline = baselines.get(REFERENCE_SENSOR_ID)
+    if baseline is None:
+        return None
+    try:
+        baseline = float(baseline)
+    except (TypeError, ValueError):
+        return None
+    return round(ref - baseline, 3)
+
 # ==========================================
 # DATABASE HELPERS
 # ==========================================
@@ -459,7 +538,8 @@ def init_db():
                 timestamp TIMESTAMPTZ DEFAULT NOW(),
                 sensor_A DOUBLE PRECISION,
                 sensor_B DOUBLE PRECISION,
-                sensor_C DOUBLE PRECISION
+                sensor_C DOUBLE PRECISION,
+                error DOUBLE PRECISION
             )
         """)
         cur.execute(f"""
@@ -468,7 +548,8 @@ def init_db():
                 timestamp TIMESTAMPTZ DEFAULT NOW(),
                 sensor_A DOUBLE PRECISION,
                 sensor_B DOUBLE PRECISION,
-                sensor_C DOUBLE PRECISION
+                sensor_C DOUBLE PRECISION,
+                error DOUBLE PRECISION
             )
         """)
         cur.execute(f"""
@@ -507,6 +588,15 @@ def init_db():
                 FOREIGN KEY (username) REFERENCES {DB_TABLE_USERS}(username) ON DELETE CASCADE
             )
         """)
+
+        # Migration: add the reference-sensor "error" column to pre-existing
+        # filtered/unfiltered tables (CREATE TABLE IF NOT EXISTS won't touch them).
+        for _table in (DB_TABLE_FILTERED, DB_TABLE_UNFILTERED):
+            try:
+                cur.execute(f"ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS error DOUBLE PRECISION")
+            except Exception as e:
+                print(f"--- Migration note: could not add 'error' to {_table}: {e} ---")
+        conn.commit()
 
         # Create indexes
         cur.execute(f"""
@@ -682,12 +772,37 @@ class CD22Sensor:
     def write_register(self, addr_h, addr_l, val_h, val_l):
         """Register write, same sequence pi_client uses: read the register
         first (protocol requirement), then write the value. Returns True on
-        an ACKed write."""
-        read_cmd = bytes([STX, 0x52, addr_h, addr_l, ETX, (0x52 ^ addr_h ^ addr_l)])
-        self.transact(read_cmd, resp_len=6)  # response content not needed
-        write_cmd = bytes([STX, 0x57, val_h, val_l, ETX, (0x57 ^ val_h ^ val_l)])
-        resp = self.transact(write_cmd, resp_len=6, deadline_s=1.0)
-        return bool(resp and resp[1] == 0x06)
+        an ACKed write.
+
+        Uses a dedicated throwaway connection (NOT the shared persistent
+        stream socket) so the read->write sequence can never interleave with
+        the 5 Hz live polling that runs on self.sock. On the shared socket the
+        stream loop's continuous polls desync the write framing and the sensor
+        NACKs it -- which showed up as "Sampling failed" on the very first
+        write of every save batch while the later writes happened to land in
+        quieter windows and succeeded."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(SENSOR_CONNECT_TIMEOUT)
+            s.connect((self.ip, self.port))
+            s.settimeout(SENSOR_TIMEOUT)
+            try:
+                # Read first (protocol requirement).
+                read_cmd = bytes([STX, 0x52, addr_h, addr_l, ETX, (0x52 ^ addr_h ^ addr_l)])
+                s.sendall(read_cmd)
+                time.sleep(0.05)
+                try: s.recv(6)
+                except Exception: pass
+                # Then write the value.
+                write_cmd = bytes([STX, 0x57, val_h, val_l, ETX, (0x57 ^ val_h ^ val_l)])
+                s.sendall(write_cmd)
+                resp = s.recv(6)
+                return bool(resp and resp[1] == 0x06)
+            finally:
+                try: s.close()
+                except Exception: pass
+        except Exception:
+            return False
 
 # ==========================================
 # FLASK & SOCKETIO SETUP
@@ -711,15 +826,17 @@ active_sensors_map = {}
 sensors_lock = threading.Lock()
 thickness_state = load_thickness_state()
 thickness_limit = load_thickness_limit()
+reference_limit = load_reference_limit()
 
 stream_state = {
     "active": True,
     "target_rate_hz": 5.0,
+    "trim_pct": 10.0,  # % of samples dropped from EACH end of the batch before averaging
     "thread": None,
     "connected_clients": 0
 }
 
-last_ingest_reading = {"A": None, "B": None, "C": None}
+last_ingest_reading = {"A": None, "B": None, "C": None, "R": None}
 pending_config_commands = []
 config_results = []
 pending_config_lock = threading.Lock()
@@ -737,7 +854,7 @@ last_ingest_monotonic = 0.0
 # fresh forever. Without per-sensor tracking the dead sensor's last value stays
 # in last_ingest_reading indefinitely and gets logged (and folded into
 # thickness) as though it were a live measurement.
-last_sensor_monotonic = {"A": 0.0, "B": 0.0, "C": 0.0}
+last_sensor_monotonic = {"A": 0.0, "B": 0.0, "C": 0.0, "R": 0.0}
 SENSOR_STALE_SECONDS = 3.0
 _last_status_emit_mono = 0.0
 _last_status_online = None
@@ -749,7 +866,7 @@ def _expire_stale_sensor_readings():
     and the DB. Returns the set of sensor ids currently considered live."""
     now_mono = time.monotonic()
     live = set()
-    for sid in ("A", "B", "C"):
+    for sid in ALL_SENSOR_IDS:
         seen = last_sensor_monotonic.get(sid, 0.0)
         if seen > 0.0 and (now_mono - seen) <= SENSOR_STALE_SECONDS:
             live.add(sid)
@@ -829,14 +946,20 @@ def _gate_email_alert_routes():
 @app.route('/server/config', methods=['GET'])
 def get_server_config():
     """Return the current server configuration.
-    Supports optional ?mode=opposite to filter sensor_configs to only A & B.
-    Default (?mode=sbs or omitted) returns all sensors A, B, C.
+    Supports optional ?mode= to filter sensor_configs:
+      - opposite      → only A & B
+      - sbs (default) → A, B, C (measurement sensors; reference R excluded)
+      - sbs-reference → A, B, C + R (reference sensor included)
     """
     mode = request.args.get("mode", "sbs").lower()
     if mode == "opposite":
         filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B"}}
+    elif mode == "sbs-reference":
+        # Reference mode = one measurement sensor (A) + one reference sensor (B).
+        # The reference sensor only monitors the baseline; thickness comes from A.
+        filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B"}}
     else:
-        filtered_configs = dict(SENSOR_CONFIGS)
+        filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B", "C"}}
 
     return jsonify({
         "sensor_configs": filtered_configs,
@@ -960,6 +1083,27 @@ def thickness_limit_api():
     limit["max"] = "" if raw_max is None else str(raw_max)
     set_thickness_limit(limit)
     return jsonify({"message": "Thickness limit saved.", **limit}), 200
+
+@app.route('/thickness/reference-limit', methods=['GET', 'POST'])
+@require_auth()
+def reference_limit_api():
+    """Reference-sensor error limit (side by side with reference mode).
+
+    Separate from the A/B/C thickness limit — the reference sensor's ERROR
+    value can be bounded independently. GET returns the current limit; POST
+    persists a new one (survives logout, login and server restarts).
+    """
+    if request.method == 'GET':
+        return jsonify(get_reference_limit()), 200
+    data = request.get_json(silent=True) or {}
+    limit = default_reference_limit()
+    limit["active"] = bool(data.get("active", False))
+    raw_min = data.get("min", "")
+    raw_max = data.get("max", "")
+    limit["min"] = "" if raw_min is None else str(raw_min)
+    limit["max"] = "" if raw_max is None else str(raw_max)
+    set_reference_limit(limit)
+    return jsonify({"message": "Reference limit saved.", **limit}), 200
 
 @app.route('/thickness/setup-ready', methods=['POST'])
 @require_auth()
@@ -1155,10 +1299,11 @@ def ingest_data():
     data = request.json
     if not data:
         return jsonify({"error": "No data provided"}), 400
-    # Normalize keys: accept sensor_A, sensor_B, sensor_C OR A, B, C
+    # Normalize keys: accept sensor_A, sensor_B, sensor_C, sensor_R OR A, B, C, R
     a = data.get("A") if "A" in data else data.get("sensor_A")
     b = data.get("B") if "B" in data else data.get("sensor_B")
     c = data.get("C") if "C" in data else data.get("sensor_C")
+    r = data.get("R") if "R" in data else data.get("sensor_R")
     now = datetime.datetime.now()
 
     # --- Multi-tenant device path ---
@@ -1171,7 +1316,8 @@ def ingest_data():
             af = float(a) if a is not None else None
             bf = float(b) if b is not None else None
             cf = float(c) if c is not None else None
-            _process_device_reading(dev_id, af, bf, cf, now)
+            rf = float(r) if r is not None else None
+            _process_device_reading(dev_id, af, bf, cf, rf, now)
             _touch_last_seen(dev_id)
             return jsonify({"message": "Data received", "device_id": dev_id,
                             "timestamp": now.isoformat()}), 200
@@ -1190,12 +1336,13 @@ def ingest_data():
     last_ingest_reading["A"] = float(a) if a is not None else None
     last_ingest_reading["B"] = float(b) if b is not None else None
     last_ingest_reading["C"] = float(c) if c is not None else None
+    last_ingest_reading["R"] = float(r) if r is not None else None
     # Mark data freshness so the stream loop can detect when sensors go offline.
     _now_mono = time.monotonic()
-    for _sid, _val in (("A", a), ("B", b), ("C", c)):
+    for _sid, _val in (("A", a), ("B", b), ("C", c), ("R", r)):
         if _val is not None:
             last_sensor_monotonic[_sid] = _now_mono
-    if a is not None or b is not None or c is not None:
+    if a is not None or b is not None or c is not None or r is not None:
         global last_ingest_monotonic
         last_ingest_monotonic = _now_mono
     return jsonify({"message": "Data received", "timestamp": now.isoformat()}), 200
@@ -1213,7 +1360,7 @@ def sensors_status():
     # Per-sensor freshness, not "does a value linger in last_ingest_reading" --
     # a sensor that died while its partner keeps reporting must show as offline.
     per = {}
-    for sid in ("A", "B", "C"):
+    for sid in ALL_SENSOR_IDS:
         seen = last_sensor_monotonic.get(sid, 0.0)
         per[sid] = bool(seen > 0.0 and (now_mono - seen) <= SENSOR_STALE_SECONDS)
     # LOCAL_MODE only: online means EVERY configured sensor is reporting -- one
@@ -1496,10 +1643,21 @@ def auth_users_create():
             (username, customer_id))
         if cur.fetchone():
             return jsonify({"error": "username already exists in this company"}), 409
+        # Reuse the lowest free id so deleted ids are recycled instead of leaving
+        # gaps. Computed in Python so it works identically on PostgreSQL and the
+        # SQLite shim used by the exe. The id is ALWAYS inserted explicitly —
+        # never fall back to the sequence default, because that sequence value
+        # is unrelated to the lowest free id (it keeps increasing after deletes).
+        # Only real (customer) users participate in the numbering; the Rajdeep
+        # service superadmin (customer_id IS NULL) holds a high reserved id and
+        # is excluded so company users are numbered from 1.
+        cur.execute("SELECT id FROM users WHERE customer_id IS NOT NULL ORDER BY id")
+        used = {row[0] for row in cur.fetchall()}
+        free_id = next((i for i in range(1, max(used) + 2) if i not in used), max(used) + 1)
         cur.execute(
-            "INSERT INTO users (username, email, password_hash, role, customer_id) "
-            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (username, email or None, generate_password_hash(password), role, customer_id))
+            "INSERT INTO users (id, username, email, password_hash, role, customer_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+            (free_id, username, email or None, generate_password_hash(password), role, customer_id))
         uid = cur.fetchone()[0]
         conn.commit()
     except Exception as e:
@@ -1711,9 +1869,11 @@ def config_write():
 @require_auth(roles=("admin",))
 def stream_trim():
     data = request.json or {}
-    target_rate = data.get("target_rate_hz", 5.0)
-    stream_state["target_rate_hz"] = float(target_rate)
-    return jsonify({"message": f"Stream rate set to {target_rate} Hz"}), 200
+    if "trim_pct" not in data:
+        return jsonify({"error": "trim_pct is required"}), 400
+    trim_pct = max(0.0, min(45.0, float(data["trim_pct"])))
+    stream_state["trim_pct"] = trim_pct
+    return jsonify({"message": f"Trim set to {trim_pct}% per side", "trim_pct": trim_pct}), 200
 
 @app.route('/stream/config', methods=['POST'])
 @require_auth(roles=("admin",))
@@ -1814,24 +1974,26 @@ def _compute_thickness(a, b, state):
     return None
 
 
-def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness, device_id=LEGACY_DEVICE_ID):
+def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness,
+              device_id=LEGACY_DEVICE_ID, raw_error=None, filt_error=None):
     """INSERT one reading into all four sensor tables, then commit.
 
     raw  -> unfiltered/raw tables (instantaneous values)
     filt -> filtered tables (moving-average values)
     device_id -> tenant tag; defaults to the legacy single-tenant install.
+    raw_error / filt_error -> reference-sensor error (current ref − baseline).
     """
     ra, rb, rc = raw.get("A"), raw.get("B"), raw.get("C")
     fa, fb, fc = filt.get("A"), filt.get("B"), filt.get("C")
     # Filtered (moving-average) SBS table
     cur.execute(
-        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
-        (now, fa, fb, fc, device_id)
+        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, error, device_id) VALUES (%s,%s,%s,%s,%s,%s)",
+        (now, fa, fb, fc, filt_error, device_id)
     )
     # Unfiltered (raw) SBS table
     cur.execute(
-        f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
-        (now, ra, rb, rc, device_id)
+        f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, error, device_id) VALUES (%s,%s,%s,%s,%s,%s)",
+        (now, ra, rb, rc, raw_error, device_id)
     )
     if ra is not None and rb is not None:
         # Filtered opposite-thickness table (moving-average sensors + thickness)
@@ -1844,7 +2006,32 @@ def _db_write(conn, cur, now, raw, filt, raw_thickness, filt_thickness, device_i
             f"INSERT INTO {DB_TABLE_THICKNESS_RAW} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
             (now, ra, rb, raw_thickness, device_id)
         )
+    # Circular-buffer cap on every write: keep only the newest `limit` rows so
+    # the table can never exceed its limit, even between maintenance runs.
+    _enforce_table_cap(cur, DB_TABLE_FILTERED, LIMIT_FILTERED)
+    _enforce_table_cap(cur, DB_TABLE_UNFILTERED, LIMIT_UNFILTERED)
+    _enforce_table_cap(cur, DB_TABLE_THICKNESS, LIMIT_THICKNESS)
+    _enforce_table_cap(cur, DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW)
     conn.commit()
+
+
+def _enforce_table_cap(cur, table, limit):
+    """Keep a table at most `limit` rows using the monotonic id column.
+
+    Rather than a COUNT(*) on every write (expensive at 5 Hz+ on a ~1M-row
+    table), use the id: after an insert the newest ids are always kept, so
+    deleting every id <= (max_id - limit) leaves at most the newest `limit`
+    rows. Oldest rows go first -- exactly the circular-buffer semantics.
+    """
+    if limit <= 0:
+        return
+    cur.execute(f"SELECT MAX(id) FROM {table}")
+    max_id = cur.fetchone()[0]
+    if max_id is None or max_id <= limit:
+        return
+    cutoff = max_id - limit
+    if cutoff > 0:
+        cur.execute(f"DELETE FROM {table} WHERE id <= %s", (cutoff,))
 
 
 def _db_write_batch(conn, cur, raw_rows, filt_row, device_id=LEGACY_DEVICE_ID):
@@ -1853,14 +2040,15 @@ def _db_write_batch(conn, cur, raw_rows, filt_row, device_id=LEGACY_DEVICE_ID):
     plus a single filtered row for the emit interval, all under one commit --
     instead of one commit per raw sample.
 
-    raw_rows -> list of (timestamp, ra, rb, rc, raw_thickness) tuples, one per
-                hardware sample collected since the last emit.
-    filt_row -> (timestamp, fa, fb, fc, filt_thickness) for this emit interval.
+    raw_rows -> list of (timestamp, ra, rb, rc, raw_thickness, raw_error) tuples,
+                one per hardware sample collected since the last emit.
+    filt_row -> (timestamp, fa, fb, fc, filt_thickness, filt_error) for this
+                emit interval.
     """
-    for ts, ra, rb, rc, raw_thickness in raw_rows:
+    for ts, ra, rb, rc, raw_thickness, raw_error in raw_rows:
         cur.execute(
-            f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
-            (ts, ra, rb, rc, device_id)
+            f"INSERT INTO {DB_TABLE_UNFILTERED} (timestamp, sensor_a, sensor_b, sensor_c, error, device_id) VALUES (%s,%s,%s,%s,%s,%s)",
+            (ts, ra, rb, rc, raw_error, device_id)
         )
         if ra is not None and rb is not None:
             cur.execute(
@@ -1868,31 +2056,41 @@ def _db_write_batch(conn, cur, raw_rows, filt_row, device_id=LEGACY_DEVICE_ID):
                 (ts, ra, rb, raw_thickness, device_id)
             )
 
-    ts, fa, fb, fc, filt_thickness = filt_row
+    ts, fa, fb, fc, filt_thickness, filt_error = filt_row
     cur.execute(
-        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, device_id) VALUES (%s,%s,%s,%s,%s)",
-        (ts, fa, fb, fc, device_id)
+        f"INSERT INTO {DB_TABLE_FILTERED} (timestamp, sensor_a, sensor_b, sensor_c, error, device_id) VALUES (%s,%s,%s,%s,%s,%s)",
+        (ts, fa, fb, fc, filt_error, device_id)
     )
     if fa is not None and fb is not None:
         cur.execute(
             f"INSERT INTO {DB_TABLE_THICKNESS} (timestamp, sensor_a, sensor_b, thickness, device_id) VALUES (%s,%s,%s,%s,%s)",
             (ts, fa, fb, filt_thickness, device_id)
         )
+    # Circular-buffer cap on every write (the local fast-poll loop writes far
+    # faster than the 60 s maintenance timer, so the cap must be enforced here).
+    _enforce_table_cap(cur, DB_TABLE_FILTERED, LIMIT_FILTERED)
+    _enforce_table_cap(cur, DB_TABLE_UNFILTERED, LIMIT_UNFILTERED)
+    _enforce_table_cap(cur, DB_TABLE_THICKNESS, LIMIT_THICKNESS)
+    _enforce_table_cap(cur, DB_TABLE_THICKNESS_RAW, LIMIT_THICKNESS_RAW)
     conn.commit()
 
 
 def calculate_filtered_average(data_batch):
-    """Trimmed mean: drop the extreme 10% of samples at each end, then average
-    the rest. Ported from the original standalone cd22_server.py -- averaging
-    over a whole batch of real hardware samples (collected at full poll rate)
-    is far more representative than a rolling mean fed one sample per emit."""
+    """Trimmed mean: drop the extreme trim_pct% of samples at each end (from
+    stream_state, user-configurable via /stream/trim), then average the rest.
+    Ported from the original standalone cd22_server.py -- averaging over a
+    whole batch of real hardware samples (collected at full poll rate) is far
+    more representative than a rolling mean fed one sample per emit."""
     if not data_batch:
         return None
     n = len(data_batch)
     if n < 3:
         return sum(data_batch) / n
+    trim_frac = max(0.0, min(45.0, stream_state.get("trim_pct", 10.0))) / 100.0
     sorted_data = sorted(data_batch)
-    trim_count = max(1, int(n * 0.10))
+    trim_count = int(n * trim_frac)
+    if trim_count == 0:
+        return sum(sorted_data) / n
     trimmed = sorted_data[trim_count:-trim_count]
     return sum(trimmed) / len(trimmed) if trimmed else sum(sorted_data) / n
 
@@ -2029,7 +2227,7 @@ def _save_device_calibration(device_id, state):
 def _get_device_state(device_id):
     st = device_state.get(device_id)
     if st is None:
-        st = {"windows": {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")},
+        st = {"windows": {sid: deque(maxlen=FILTER_WINDOW) for sid in ALL_SENSOR_IDS},
               "thickness": _load_device_calibration(device_id), "n": 0,
               "last_raw": {}, "latest": None, "seq": 0, "last_mono": 0.0}
         device_state[device_id] = st
@@ -2065,13 +2263,13 @@ def _db_trim_device(cur, conn, device_id):
                 (device_id, excess))
     conn.commit()
 
-def _process_device_reading(device_id, a, b, c, now):
+def _process_device_reading(device_id, a, b, c, r, now):
     """Inline per-device pipeline for a provisioned device: moving-average filter,
     thickness, DB write tagged with device_id, and emit to that device's room."""
     st = _get_device_state(device_id)
-    reading = {"A": a, "B": b, "C": c}
+    reading = {"A": a, "B": b, "C": c, "R": r}
     filtered = {}
-    for sid in ("A", "B", "C"):
+    for sid in ALL_SENSOR_IDS:
         rv = reading.get(sid)
         if rv is None:
             filtered[sid] = None
@@ -2083,6 +2281,8 @@ def _process_device_reading(device_id, a, b, c, now):
     tstate = st["thickness"]
     raw_thickness = _compute_thickness(a, b, tstate)
     filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), tstate)
+    raw_error = calculate_reference_error(reading.get(REFERENCE_SENSOR_ID), tstate)
+    filt_error = calculate_reference_error(filtered.get(REFERENCE_SENSOR_ID), tstate)
 
     # Stash the latest reading; the stream loop emits it to this device's room at a
     # steady 5 Hz (emitting from this HTTP worker thread was choppy in threading mode).
@@ -2090,19 +2290,21 @@ def _process_device_reading(device_id, a, b, c, now):
     st["latest"] = {
         "timestamp": now.isoformat(),
         "device_id": device_id,
-        "distance_A": a, "distance_B": b, "distance_C": c,
+        "distance_A": a, "distance_B": b, "distance_C": c, "distance_R": r,
         "thickness": raw_thickness,
+        "error": raw_error,
     }
     st["seq"] = st.get("seq", 0) + 1
     # Per-device freshness stamp — drives this device's own online/offline banner
     # (independent of the legacy pi_client feed).
-    if a is not None or b is not None or c is not None:
+    if a is not None or b is not None or c is not None or r is not None:
         st["last_mono"] = time.monotonic()
 
     conn, cur = _db_connect()
     if conn is not None:
         try:
-            _db_write(conn, cur, now, reading, filtered, raw_thickness, filt_thickness, device_id=device_id)
+            _db_write(conn, cur, now, reading, filtered, raw_thickness, filt_thickness,
+                      device_id=device_id, raw_error=raw_error, filt_error=filt_error)
             st["n"] += 1
             if st["n"] % 2000 == 0:   # trim ~every 2000 inserts (~7 min @ 5 Hz)
                 _db_trim_device(cur, conn, device_id)
@@ -2140,7 +2342,7 @@ def _stream_ingest_loop_local():
     global last_ingest_monotonic
     db_conn, db_cur = _db_connect()
     inserts_since_trim = 0
-    batches = {sid: [] for sid in ("A", "B", "C")}
+    batches = {sid: [] for sid in ALL_SENSOR_IDS}
     raw_db_buffer = []
     device_emit_seq = {}
     last_emit_time = time.time()
@@ -2170,12 +2372,15 @@ def _stream_ingest_loop_local():
             state_now = get_thickness_state()
             raw_thickness_now = _compute_thickness(
                 last_ingest_reading.get("A"), last_ingest_reading.get("B"), state_now)
+            raw_error_now = calculate_reference_error(
+                last_ingest_reading.get(REFERENCE_SENSOR_ID), state_now)
             raw_db_buffer.append((
                 datetime.datetime.now(),
                 last_ingest_reading.get("A"),
                 last_ingest_reading.get("B"),
                 last_ingest_reading.get("C"),
                 raw_thickness_now,
+                raw_error_now,
             ))
 
         # Tell the frontend whether sensors are live or disconnected. Every
@@ -2202,12 +2407,13 @@ def _stream_ingest_loop_local():
                 state = get_thickness_state()
 
                 filtered = {}
-                for sid in ("A", "B", "C"):
+                for sid in ALL_SENSOR_IDS:
                     batch = batches[sid]
                     filtered[sid] = round(calculate_filtered_average(batch), 3) if batch else None
                     batches[sid] = []
 
                 filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), state)
+                filt_error = calculate_reference_error(filtered.get(REFERENCE_SENSOR_ID), state)
 
                 if filt_thickness is not None:
                     try:
@@ -2220,7 +2426,9 @@ def _stream_ingest_loop_local():
                     "distance_A": filtered.get("A"),
                     "distance_B": filtered.get("B"),
                     "distance_C": filtered.get("C"),
+                    "distance_R": filtered.get("R"),
                     "thickness": filt_thickness,
+                    "error": filt_error,
                     "device_id": LEGACY_DEVICE_ID,
                 }
                 socketio.emit("sensor_reading", payload, room=LEGACY_DEVICE_ID)
@@ -2231,7 +2439,7 @@ def _stream_ingest_loop_local():
                 if db_conn is not None:
                     try:
                         _db_write_batch(db_conn, db_cur, raw_db_buffer,
-                                         (now, filtered.get("A"), filtered.get("B"), filtered.get("C"), filt_thickness))
+                                         (now, filtered.get("A"), filtered.get("B"), filtered.get("C"), filt_thickness, filt_error))
                         inserts_since_trim += 1
                         if inserts_since_trim >= 10000:
                             _db_trim(db_cur, db_conn)
@@ -2285,7 +2493,7 @@ def stream_ingest_loop():
     db_conn, db_cur = _db_connect()
     inserts_since_trim = 0
     # Rolling buffers for the moving-average filter (one per sensor)
-    filter_windows = {sid: deque(maxlen=FILTER_WINDOW) for sid in ("A", "B", "C")}
+    filter_windows = {sid: deque(maxlen=FILTER_WINDOW) for sid in ALL_SENSOR_IDS}
     # Last emitted seq per device room (so we only emit fresh readings).
     device_emit_seq = {}
 
@@ -2309,6 +2517,7 @@ def stream_ingest_loop():
             last_ingest_reading["A"] = None
             last_ingest_reading["B"] = None
             last_ingest_reading["C"] = None
+            last_ingest_reading["R"] = None
         else:
             # Expire individual sensors that stopped reporting while others
             # kept the aggregate timestamp fresh (see _expire_stale_sensor_readings).
@@ -2350,7 +2559,7 @@ def stream_ingest_loop():
             # rolling window and take the mean. Sensors absent from this reading
             # keep their previous window untouched and report None.
             filtered = {}
-            for sid in ("A", "B", "C"):
+            for sid in ALL_SENSOR_IDS:
                 rv = reading.get(sid)
                 if rv is None:
                     filtered[sid] = None
@@ -2362,6 +2571,9 @@ def stream_ingest_loop():
             # Raw and filtered thickness (opposite mode)
             raw_thickness = _compute_thickness(reading.get("A"), reading.get("B"), state)
             filt_thickness = _compute_thickness(filtered.get("A"), filtered.get("B"), state)
+            # Reference-sensor error (side by side with reference mode)
+            raw_error = calculate_reference_error(reading.get(REFERENCE_SENSOR_ID), state)
+            filt_error = calculate_reference_error(filtered.get(REFERENCE_SENSOR_ID), state)
 
             # Check email alert thresholds on the raw thickness reading
             if raw_thickness is not None:
@@ -2375,7 +2587,9 @@ def stream_ingest_loop():
                 "distance_A": reading.get("A"),
                 "distance_B": reading.get("B"),
                 "distance_C": reading.get("C"),
+                "distance_R": reading.get("R"),
                 "thickness": raw_thickness,
+                "error": raw_error,
                 "device_id": LEGACY_DEVICE_ID,
             }
             # Room-scoped so the multi-tenant dashboard only receives the device
@@ -2387,7 +2601,8 @@ def stream_ingest_loop():
                 db_conn, db_cur = _db_connect()
             if db_conn is not None:
                 try:
-                    _db_write(db_conn, db_cur, now, reading, filtered, raw_thickness, filt_thickness)
+                    _db_write(db_conn, db_cur, now, reading, filtered, raw_thickness, filt_thickness,
+                              raw_error=raw_error, filt_error=filt_error)
                     inserts_since_trim += 1
                     if inserts_since_trim >= 10000:
                         _db_trim(db_cur, db_conn)
@@ -2419,10 +2634,49 @@ def stream_ingest_loop():
         target_delay = 1.0 / max(stream_state["target_rate_hz"], 1.0)
         time.sleep(target_delay)
 
+def _maintenance_loop():
+    """Periodically enforce the circular-buffer row caps on every table,
+    independent of whether sensor data is currently flowing.
+
+    The streaming loops only trim inside their write path (every N inserted
+    rows) — when the stream is idle (sensors offline, server idle) the tables
+    are never pruned even if they exceed their limits. This background thread
+    runs on a fixed timer so the limits are always respected, no matter the
+    stream state. It trims both the global per-table limits and the per-device
+    caps (_db_trim_device), which the streaming path also enforces but which
+    can be skipped when no device is actively ingesting.
+    """
+    while True:
+        time.sleep(DB_TRIM_INTERVAL)
+        try:
+            conn, cur = _db_connect()
+            if conn is None:
+                continue
+            try:
+                _db_trim(cur, conn)
+                for did in list(device_state.keys()):
+                    _db_trim_device(cur, conn, did)
+                # Also trim any device that wrote rows but has since been dropped
+                # from device_state (e.g. after a restart while it was offline).
+                for table in (DB_TABLE_FILTERED, DB_TABLE_UNFILTERED,
+                              DB_TABLE_THICKNESS, DB_TABLE_THICKNESS_RAW):
+                    cur.execute(
+                        f"SELECT DISTINCT device_id FROM {table} "
+                        f"WHERE device_id IS NOT NULL")
+                    for (did,) in cur.fetchall():
+                        _db_trim_device(cur, conn, did)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[Maintenance] trim error: {e}", flush=True)
+
+
 def start_background_tasks():
     """Start background threads for streaming."""
     t = threading.Thread(target=stream_ingest_loop, daemon=True)
     t.start()
+    m = threading.Thread(target=_maintenance_loop, daemon=True)
+    m.start()
     from email_alert_routes import start_background_tasks as start_email_tasks
     start_email_tasks()
 
@@ -2437,6 +2691,7 @@ def main():
     refresh_sensor_configs()
     init_thickness_state_file()
     init_thickness_limit_file()
+    init_reference_limit_file()
     init_db()
     start_background_tasks()
     print(f"  Active sensors: {list(active_sensors_map.keys())}")

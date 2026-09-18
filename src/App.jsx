@@ -55,6 +55,11 @@ export default function App() {
   // functional updaters and persist the result without a stale closure.
   const thicknessLimitRef = useRef(thicknessLimit);
 
+  // Reference-sensor ERROR limit (side-by-side with reference mode only). Separate
+  // from the A/B/C thickness limit and also stored globally on the server.
+  const [referenceLimit, setReferenceLimit] = useState({ active: false, min: "", max: "" });
+  const referenceLimitRef = useRef(referenceLimit);
+
   // Multi-tenant: the device whose live stream / data this session is viewing.
   const [devices, setDevices]               = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
@@ -64,12 +69,26 @@ export default function App() {
   const counterRef      = useRef(1);
   const lastReadingTime = useRef(null);
 
+  // Presence connection: independent of the run-mode data socket above, which
+  // the operator can pause/resume freely (handleToggle) without that meaning
+  // the browser tab closed. This one connects once when the app mounts (even
+  // pre-login, on the mode-select/login screens) and stays open for the whole
+  // tab lifetime so the Windows launcher's "close tab -> quit app" watcher
+  // (backend/local_gui.py) sees the tab as open no matter which page is active.
+  useEffect(() => {
+    const presence = io(SERVER, { transports: ["polling", "websocket"] });
+    return () => presence.disconnect();
+  }, []);
+
   // ── Mode selection ─────────────────────────────────────────────────────
   function handleSelectMode(mode) {
     setSensorMode(mode);
     // Fetch sensor configs from server (dynamic, not hardcoded)
     const fetcher = mode === "opposite" ? fetchOppConfigs : fetchSbsConfigs;
-    fetcher(mode === "opposite" ? "opposite" : "sbs").then(configs => {
+    const modeKey = mode === "opposite" ? "opposite"
+                  : mode === "sbs-reference" ? "sbs-reference"
+                  : "sbs";
+    fetcher(modeKey).then(configs => {
       if (Object.keys(configs).length === 0) {
         console.warn("No sensor configs received from server.");
         console.warn("Ensure sensor_network.json exists on the server.");
@@ -141,6 +160,38 @@ export default function App() {
     // Fire-and-forget: the local state is the source of truth for the UI; the
     // server copy just makes it survive logout / login-as-another-user.
     fetch(`${SERVER}/thickness/limit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(next),
+    }).catch(() => {});
+  }
+
+  // Reference-sensor error limit — mirrors the thickness limit, but stored under
+  // its own global server key (/thickness/reference-limit).
+  async function loadReferenceLimit() {
+    try {
+      const response = await fetch(`${SERVER}/thickness/reference-limit`, { headers: authHeaders() });
+      if (!response.ok) return;
+      const data = await response.json();
+      const next = {
+        active: !!data.active,
+        min: data.min ?? "",
+        max: data.max ?? "",
+      };
+      referenceLimitRef.current = next;
+      setReferenceLimit(next);
+    } catch {
+      // Keep the UI usable even if the reference-limit endpoint is unavailable.
+    }
+  }
+
+  function updateReferenceLimit(updater) {
+    const next = typeof updater === "function"
+      ? updater(referenceLimitRef.current)
+      : updater;
+    referenceLimitRef.current = next;
+    setReferenceLimit(next);
+    fetch(`${SERVER}/thickness/reference-limit`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(next),
@@ -339,6 +390,8 @@ export default function App() {
           a: data.distance_A ?? null,
           b: data.distance_B ?? null,
           c: data.distance_C ?? null,
+          r: data.distance_R ?? null,
+          error: data.error ?? null,
         };
       }
 
@@ -396,6 +449,7 @@ export default function App() {
     // Calibration state and thickness limit are now global (shared across all users)
     await loadThicknessState();
     await loadThicknessLimit();
+    await loadReferenceLimit();
   }
 
   // Switch which device's live stream this session views. Reconnect the socket so
@@ -432,6 +486,7 @@ export default function App() {
     setCalibrationBusy(false);
     setRunModeVisitKey(0);
     setThicknessLimit({ active: false, min: "", max: "" });
+    setReferenceLimit({ active: false, min: "", max: "" });
     try { window.localStorage.removeItem("thicknessmon.calibrated"); } catch {}
     counterRef.current      = 1;
     lastReadingTime.current = null;
@@ -447,6 +502,7 @@ export default function App() {
     if (!user) return;
     loadThicknessState();
     loadThicknessLimit();
+    loadReferenceLimit();
   }, [user]);
 
   // Keep the ref in sync with state for any external setThicknessLimit callers
@@ -454,6 +510,10 @@ export default function App() {
   useEffect(() => {
     thicknessLimitRef.current = thicknessLimit;
   }, [thicknessLimit]);
+
+  useEffect(() => {
+    referenceLimitRef.current = referenceLimit;
+  }, [referenceLimit]);
 
   useEffect(() => {
     if (page === "run-mode") {
@@ -491,6 +551,7 @@ export default function App() {
 
   // ── Mode is chosen but no user → show login ──
   const isOpposite = sensorMode === "opposite";
+  const isSbsReference = sensorMode === "sbs-reference";
   const LoginComponent = isOpposite ? OppLoginPage : SbsLoginPage;
 
   if (!user) return <LoginComponent onLogin={handleLogin} />;
@@ -525,7 +586,7 @@ export default function App() {
             >
               {devices.map(d => (
                 <option key={d.device_id} value={d.device_id}>
-                  {(d.customer_name ? d.customer_name + " — " : "") + (d.label || d.device_id)}
+                  {(d.customer_name ? d.customer_name + " - " : "") + (d.label || d.device_id)}
                 </option>
               ))}
             </select>
@@ -534,7 +595,7 @@ export default function App() {
               {(() => {
                 const d = devices.find(x => x.device_id === selectedDevice);
                 return d
-                  ? (d.customer_name ? d.customer_name + " — " : "") + (d.label || d.device_id)
+                  ? (d.customer_name ? d.customer_name + " - " : "") + (d.label || d.device_id)
                   : selectedDevice;
               })()}
             </strong>
@@ -548,7 +609,7 @@ export default function App() {
           fontSize: 14, fontWeight: 600, textAlign: "center",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
         }}>
-          ⚠ Sensors disconnected — no live data is being received from the sensors.
+          ⚠ Sensors disconnected - no live data is being received from the sensors.
         </div>
       )}
 
@@ -601,6 +662,9 @@ export default function App() {
                 runModeVisitKey={runModeVisitKey}
                 thicknessLimit={thicknessLimit}
                 setThicknessLimit={updateThicknessLimit}
+                referenceMode={isSbsReference}
+                referenceLimit={referenceLimit}
+                setReferenceLimit={updateReferenceLimit}
               />
             )
           )}
@@ -611,7 +675,7 @@ export default function App() {
             />
           )}
           {page === "backend" && (
-            <BackendPage user={user} />
+            <BackendPage user={user} sensorMode={sensorMode} />
           )}
         </div>
       </div>

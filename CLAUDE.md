@@ -3,6 +3,10 @@
 Single unified thickness monitoring app for Rajdeep Analytics.
 Two sensor modes (Side-by-Side and Opposite) from one Flask backend and one React frontend.
 
+> **Full engineering reference:** `TECHNICAL_REFERENCE.md` — the complete
+> documentation of every component (routes, schemas, CD22 protocol, thickness
+> math, the built `.exe`s, builds, env vars, known issues).
+
 Two delivery models from this one codebase:
 - **Cloud (SaaS)** — agent `.deb` on a gateway box streams to the KVM; dashboard on Vercel.
   Runbook: `WAREHOUSE_TO_CUSTOMER_FLOW.md`.
@@ -11,6 +15,34 @@ Two delivery models from this one codebase:
   license activation. Runbook: `LOCAL_APPLIANCE_FLOW.md`. Build: `local/build-local-deb.sh`.
   License tool: `tools/local_license_tool.py` (signing key in `~/thickness-license-keys`,
   never in git). All local-only behaviour is gated on `LOCAL_MODE=true` — never set on the KVM.
+
+### Built executables
+- `local/dist/Thickness Monitoring.exe` — **Windows offline appliance** (onefile,
+  tray + browser, auto-quit on tab close). Entry `backend/local_gui.py`, spec
+  `local/thickness-local.spec`.
+
+  > **How to edit the exe's code (no fork):** the exe runs the SAME shared
+  > backend as every other product — `local_gui.py` → `local_main.py` →
+  > `merged_server.py`. `merged_server.py` and the whole `src/` React app are
+  > shared; the server picks local vs cloud from `LOCAL_MODE`/`CLOUD_MODE`.
+  > **Do not copy/fork these files into a separate folder** — a fork would let
+  > fixes silently miss the server version (drift). Edit the shared files at the
+  > repo root, then rebuild.
+  >
+  > **Rebuild (from repo root):**
+  > 1. (first time) `python -m venv local\.build-venv-win` then
+  >    `local\.build-venv-win\Scripts\pip install --upgrade pip pyinstaller` and
+  >    `...\pip install -r local\requirements-local.txt`
+  > 2. `npx vite build --mode localapp`   (offline frontend → root `dist/`)
+  > 3. `local\.build-venv-win\Scripts\pyinstaller --noconfirm local\thickness-local.spec`
+  >    → `local\dist\Thickness Monitoring.exe`
+  >
+  > ⚠ Step 2 overwrites `dist/` with the offline build — run plain `npm run build`
+  > again before any cloud/server deploy (`deploy.py`).
+- `tools/dist/license-studio.exe` — **Thickness License Studio** (internal GUI
+  that issues activation cards). Entry `tools/license_app.py`, spec
+  `tools/license_app.spec`.
+- `agent/` builds → `thickness-agent` binary / `.deb` (customer-side cloud reader).
 
 ---
 
@@ -24,6 +56,12 @@ Two delivery models from this one codebase:
 | **SSH user** | `linux` |
 | **SSH password / sudo** | `linux` |
 | **Repo path** | `~/merged-version` |
+
+> **When the user says "Ubuntu PC" (or "connect to the Ubuntu PC"), connect to
+> `192.168.5.13` (user `linux`, password `linux`).** No other host is ever meant.
+> Helper script (Windows side): `C:\Users\admin\AppData\Local\Temp\opencode\upc.ps1`
+> runs a bash command over SSH, e.g.
+> `powershell -File "...\upc.ps1" "sudo systemctl status pi-merged-client"`.
 
 This is the machine that also runs the `pi-merged-client` service (sensor reader).
 The Windows machine at `192.168.5.10` is where Claude Code runs — it SSHes into

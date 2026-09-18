@@ -300,6 +300,21 @@
             box-shadow: 0 0 0 3px rgba(59,85,168,0.06);
         }
 
+        /* ── ADD SENSOR BUTTON ROW (reference-mode setup only) ── */
+        .add-sensor-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .add-sensor-row .add-sensor-btn {
+            flex: 1;
+            margin-bottom: 0;
+        }
+        .add-reference-btn {
+            color: var(--blue);
+            border-color: rgba(59,85,168,0.35);
+        }
+
         /* ── SAVE BUTTON (primary btn) ── */
         .save-btn {
             width: 100%;
@@ -435,10 +450,15 @@
         <!-- Sensor Cards -->
         <div id="sensorList"></div>
 
-        <!-- Add Sensor Button -->
-        <button class="add-sensor-btn" onclick="addSensor()">
-            + Add Sensor
-        </button>
+        <!-- Add Sensor Buttons -->
+        <div class="add-sensor-row" id="addSensorRow" style="display:none;">
+            <button class="add-sensor-btn" id="plainAddBtn" onclick="addSensor()">
+                + Add Sensor
+            </button>
+            <button class="add-sensor-btn add-reference-btn" id="refAddBtn" onclick="addReferenceSensor()">
+                + Add Reference Sensor
+            </button>
+        </div>
 
         <!-- Save Button -->
         <button class="save-btn" id="saveBtn" onclick="saveConfig()">
@@ -451,7 +471,20 @@
     </div>
 
     <script>
-        const SENSOR_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'];
+        // ?mode=reference → "Side by Side with Reference" setup: one measurement
+        // sensor (A) + one reference sensor (B). This is the ONLY page variant
+        // that shows the "Add Reference Sensor" button; the plain page (opened
+        // for side-by-side / opposite modes) keeps the original A,B,C,... labels
+        // and never exposes the reference button.
+        const REFERENCE_MODE = new URLSearchParams(location.search).get('mode') === 'reference';
+        // The reference sensor is always "B" on this appliance — the backend's
+        // REFERENCE_SENSOR_ID and the frontend's REFERENCE_ID both use "B".
+        const REFERENCE_LABEL = 'B';
+        // Measurement sensor labels for the reference-mode page. "B" is excluded
+        // whenever the reference sensor is present so the two never collide.
+        const MEASUREMENT_LABELS = ['A', 'B', 'C', 'D', 'E', 'F'];
+        // Plain page labels (unchanged original behaviour).
+        const SENSOR_LABELS = ['A', 'B', 'C', 'R', 'D', 'E', 'F'];
         let sensorCount = 0;
 
         // The backend gates /config/network behind a login token (multi-tenant
@@ -477,7 +510,9 @@
             return port ? `http://${ip}:${port}` : `http://${ip}`;
         }
 
+        // ── PLAIN PAGE (side-by-side / opposite): original behaviour ─────────
         function addSensor(ip = '', port = '8234', name = '') {
+            if (REFERENCE_MODE) { addMeasurementSensor(ip, port, name); return; }
             const label = SENSOR_LABELS[sensorCount] || `S${sensorCount + 1}`;
             const defaultName = name || `Sensor ${label}`;
             const id = `sensor_${sensorCount}`;
@@ -510,9 +545,97 @@
             document.getElementById('sensorList').appendChild(card);
         }
 
+        // ── REFERENCE-MODE PAGE helpers ─────────────────────────────────────
+        function sensorTitle(label, isReference) {
+            return isReference ? 'Reference' : `Sensor ${label}`;
+        }
+
+        function sensorDefaultName(label, isReference) {
+            return isReference ? 'Reference' : `Sensor ${label}`;
+        }
+
+        function isReferenceCard(card) {
+            return card.dataset.reference === '1';
+        }
+
+        // Reassign measurement labels so they never collide with the reference
+        // sensor. Measurement sensors get A, C, D, ... (skipping B) when a
+        // reference sensor exists; otherwise A, B, C, ...
+        function reassignLabels() {
+            const cards   = [...document.querySelectorAll('.sensor-card')];
+            const hasRef  = cards.some(isReferenceCard);
+            let measureIndex = 0;
+            cards.forEach(card => {
+                const title = card.querySelector('.sensor-card-title-label');
+                if (isReferenceCard(card)) {
+                    card.dataset.label = REFERENCE_LABEL;
+                    if (title) title.textContent = 'Reference';
+                } else {
+                    const pool = hasRef
+                        ? MEASUREMENT_LABELS.filter(l => l !== REFERENCE_LABEL)
+                        : MEASUREMENT_LABELS;
+                    const label = pool[measureIndex] || `S${measureIndex + 1}`;
+                    measureIndex++;
+                    card.dataset.label = label;
+                    if (title) title.textContent = `Sensor ${label}`;
+                }
+            });
+        }
+
+        function addSensorCard(label, ip = '', port = '8234', name = '', isReference = false) {
+            const defaultName = name || sensorDefaultName(label, isReference);
+            const id = `sensor_${sensorCount}`;
+            sensorCount++;
+
+            const card = document.createElement('div');
+            card.className = 'sensor-card';
+            card.id = id;
+            card.dataset.label = label;
+            card.dataset.reference = isReference ? '1' : '0';
+            card.innerHTML = `
+                <div class="sensor-card-title">
+                    <span class="sensor-card-title-label">${sensorTitle(label, isReference)}</span>
+                    <button class="remove-btn" onclick="removeSensor('${id}')">&times;</button>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>IP Address</label>
+                        <input type="text" placeholder="192.168.1.7" value="${ip}" class="sensor-ip">
+                    </div>
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="text" placeholder="8234" value="${port}" class="sensor-port">
+                    </div>
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input type="text" placeholder="${sensorDefaultName(label, isReference)}" value="${defaultName}" class="sensor-name">
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('sensorList').appendChild(card);
+            reassignLabels();
+        }
+
+        // Add a normal measurement sensor (used for thickness measurement).
+        function addMeasurementSensor(ip = '', port = '8234', name = '') {
+            addSensorCard('A', ip, port, name, false);
+        }
+
+        // Add the reference sensor. Only one reference sensor is allowed.
+        function addReferenceSensor(ip = '', port = '8234', name = '') {
+            const existingRef = [...document.querySelectorAll('.sensor-card')].find(isReferenceCard);
+            if (existingRef) {
+                showStatus('Only one reference sensor is allowed.', 'error');
+                return;
+            }
+            addSensorCard(REFERENCE_LABEL, ip, port, name || 'Reference', true);
+        }
+
         function removeSensor(id) {
             const card = document.getElementById(id);
             if (card) card.remove();
+            if (REFERENCE_MODE) reassignLabels();
         }
 
         /** Fetch existing config from the backend and populate the form */
@@ -542,7 +665,12 @@
                 }
 
                 const config = await response.json();
-                const entries = Object.entries(config);
+                let entries = Object.entries(config);
+
+                // Reference mode: keep ONLY A (measurement) and B (reference).
+                if (REFERENCE_MODE) {
+                    entries = entries.filter(([label]) => label === 'A' || label === REFERENCE_LABEL);
+                }
 
                 // Clear existing sensor cards
                 const list = document.getElementById('sensorList');
@@ -550,13 +678,26 @@
                 sensorCount = 0;
 
                 if (entries.length === 0) {
-                    // No config — add 2 default empty sensors
-                    addSensor('', '8234', '');
-                    addSensor('', '8234', '');
+                    // No config — add default empty sensors for this mode
+                    if (REFERENCE_MODE) {
+                        addSensorCard('A', '', '8234', '');
+                        addSensorCard(REFERENCE_LABEL, '', '8234', 'Reference', true);
+                    } else {
+                        addSensor('', '8234', '');
+                        addSensor('', '8234', '');
+                    }
                     showStatus('No existing config found. Add your sensors below.', 'success');
                 } else {
                     entries.forEach(([label, cfg]) => {
-                        addSensor(cfg.ip || '', cfg.port || '8234', cfg.name || `Sensor ${label}`);
+                        if (REFERENCE_MODE) {
+                            const isRef = (REFERENCE_MODE && label === REFERENCE_LABEL)
+                                || (cfg.name || '').trim().toLowerCase() === 'reference';
+                            // Preserve the user's saved name (do NOT force "Reference").
+                            const name = cfg.name || sensorDefaultName(label, isRef);
+                            addSensorCard(label, cfg.ip || '', cfg.port || '8234', name, isRef);
+                        } else {
+                            addSensor(cfg.ip || '', cfg.port || '8234', cfg.name || `Sensor ${label}`);
+                        }
                     });
                     showStatus(`Loaded ${entries.length} sensor(s) from backend.`, 'success');
                 }
@@ -583,7 +724,7 @@
                 return;
             }
 
-            // Build config object using labels A, B, C, D, E, F
+            // Build config object using each card's assigned label.
             const config = {};
             const labels = SENSOR_LABELS;
             let valid = true;
@@ -592,10 +733,13 @@
                 const ip   = card.querySelector('.sensor-ip').value.trim();
                 const port = card.querySelector('.sensor-port').value.trim();
                 const name = card.querySelector('.sensor-name').value.trim();
-                const label = labels[index] || `S${index + 1}`;
+                const label = REFERENCE_MODE
+                    ? (card.dataset.label || `S${index + 1}`)
+                    : (labels[index] || `S${index + 1}`);
+                const isRef = REFERENCE_MODE && isReferenceCard(card);
 
                 if (!ip) {
-                    showStatus(`Sensor ${label}: IP address is required!`, 'error');
+                    showStatus(`${isRef ? 'Reference' : `Sensor ${label}`}: IP address is required!`, 'error');
                     valid = false;
                     return;
                 }
@@ -603,7 +747,7 @@
                 config[label] = {
                     ip:   ip,
                     port: parseInt(port) || 8234,
-                    name: name || `Sensor ${label}`
+                    name: name || (isRef ? 'Reference' : `Sensor ${label}`)
                 };
             });
 
@@ -664,9 +808,28 @@
                 </div>`;
         }
 
-        // Start with 2 empty sensors by default
-        addSensor('', '8234', '');
-        addSensor('', '8234', '');
+        if (REFERENCE_MODE) {
+            document.title = 'Reference Mode - Sensor Network Setup';
+            document.querySelector('.logo-text h1').textContent = 'Reference Mode Setup';
+            document.querySelector('.logo-text p').textContent = 'Sensor + Reference Network';
+            const addRow = document.getElementById('addSensorRow');
+            if (addRow) addRow.style.display = 'flex';
+        } else {
+            // Plain page: original single full-width "+ Add Sensor" button only.
+            const addRow = document.getElementById('addSensorRow');
+            const refBtn = document.getElementById('refAddBtn');
+            if (addRow) addRow.style.display = 'flex';
+            if (refBtn) refBtn.style.display = 'none';
+        }
+
+        // Start with the default sensors for this mode
+        if (REFERENCE_MODE) {
+            addSensorCard('A', '', '8234', '');
+            addSensorCard(REFERENCE_LABEL, '', '8234', 'Reference', true);
+        } else {
+            addSensor('', '8234', '');
+            addSensor('', '8234', '');
+        }
     </script>
 </body>
 </html>

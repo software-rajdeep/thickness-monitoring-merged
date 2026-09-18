@@ -9,7 +9,7 @@ export default function ModeSelection({ onSelectMode }) {
             <div className="login-mark">
               <Ic.Logo />
             </div>
-            <span className="login-title">THICKNESS MONITORING</span>
+            <span className="login-rajdeep">RAJDEEP</span>
           </div>
           <div className="login-sub">CD22 THICKNESS MONITORING SYSTEM</div>
         </div>
@@ -55,6 +55,25 @@ export default function ModeSelection({ onSelectMode }) {
               <line x1="14" y1="12" x2="22" y2="12"/>
             </svg>
             Opposite Side Sensors
+          </button>
+
+          <button
+            className="btn-primary"
+            style={{
+              background: "linear-gradient(135deg, #7a5ea0, #4d3a6e)",
+              justifyContent: "center", padding: "14px 20px",
+              fontSize: 14,
+            }}
+            onClick={() => onSelectMode("sbs-reference")}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="2" width="20" height="20" rx="2.18"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <line x1="12" y1="2" x2="12" y2="22"/>
+              <circle cx="18" cy="6" r="3"/>
+            </svg>
+            Side by Side with Reference
           </button>
         </div>
 

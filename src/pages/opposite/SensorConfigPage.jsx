@@ -13,7 +13,7 @@ const REG = {
   alarm:     { addr_h: "0x40", addr_l: "0x0C" },
 };
 
-const SP_VALS  = ["0x00","0x01","0x02","0x03","0x0A"];
+const SP_VALS  = ["0x00","0x01","0x02","0x03","0x04"];
 const SP_LABEL = ["500us","1000us","2000us","4000us","AUTO"];
 const SP_JSON  = ["500us","1000us","2000us","4000us","AUTO"];
 
@@ -182,7 +182,7 @@ export default function SensorConfigPage({ user, onToast }) {
 
     addLog("──── Save complete ────", "sys");
     setSaving(false);
-    onToast(allOk ? "Both sensors configured successfully" : "Some writes failed — check log", allOk ? "success" : "error");
+    onToast(allOk ? "Both sensors configured successfully" : "Some writes failed - check log", allOk ? "success" : "error");
   }
 
   // ── APPLY STREAM RATE ────────────────────────────────────────────────────
@@ -281,7 +281,6 @@ export default function SensorConfigPage({ user, onToast }) {
         <div className="page-header-row">
           <div>
             <div className="page-title">Sensor Configuration</div>
-            <div className="page-sub">HARDWARE PARAMETERS · CD22 SERIES</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-outline" onClick={loadConfig}>

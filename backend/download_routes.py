@@ -60,7 +60,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             cur  = conn.cursor()
             where, params = _device_filter()
             cur.execute(f"""
-                SELECT id, timestamp, sensor_a, sensor_b, sensor_c
+                SELECT id, timestamp, sensor_a, sensor_b, sensor_c, error
                 FROM {DB_TABLE_FILTERED}{where}
                 ORDER BY timestamp ASC
             """, params)
@@ -70,7 +70,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness"])
+            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness", "error"])
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -89,7 +89,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             cur  = conn.cursor()
             where, params = _device_filter()
             cur.execute(f"""
-                SELECT id, timestamp, sensor_a, sensor_b, sensor_c
+                SELECT id, timestamp, sensor_a, sensor_b, sensor_c, error
                 FROM {DB_TABLE_UNFILTERED}{where}
                 ORDER BY timestamp ASC
             """, params)
@@ -99,7 +99,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness"])
+            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness", "error"])
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -164,7 +164,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
-            writer.writerows(rows)
+            writer.writerows(rows)                                                                                                                                                                                                                                                                  
             output.seek(0)
             return Response(
                 output.getvalue(),
@@ -201,7 +201,9 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
                 except:
                     thickness_raw_count = 0
 
-            cur.execute("SELECT COUNT(*) FROM users")
+            # Count real (customer) users only — the Rajdeep service superadmin
+            # (customer_id IS NULL) is hidden and must not be counted.
+            cur.execute("SELECT COUNT(*) FROM users WHERE customer_id IS NOT NULL")
             users_count = cur.fetchone()[0]
             cur.close()
             conn.close()

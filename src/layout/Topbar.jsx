@@ -17,8 +17,9 @@ export default function Topbar({ user, page, onLogout }) {
         <div className="brand-mark">
           <Ic.Logo />
         </div>
-        <div className="brand-name">
-          Thickness<span>Monitoring</span>
+        <div>
+          <div className="brand-rajdeep">RAJDEEP</div>
+          <div className="brand-product">Thickness Monitoring</div>
         </div>
       </div>
 

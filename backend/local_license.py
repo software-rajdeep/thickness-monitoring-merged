@@ -116,11 +116,11 @@ def verify_code(code):
         signature = _b64d(parts[2])
         payload = json.loads(payload_bytes)
     except Exception:
-        raise ValueError("License code is corrupted — re-copy it from the activation card.")
+        raise ValueError("License code is corrupted - re-copy it from the activation card.")
 
     pub_hex = _public_key_hex()
     if not pub_hex:
-        raise ValueError("This build has no license public key installed — contact Rajdeep Analytics.")
+        raise ValueError("This build has no license public key installed - contact Rajdeep Analytics.")
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
         from cryptography.exceptions import InvalidSignature
@@ -224,12 +224,12 @@ def _seed_tenant(payload):
             cur.execute(
                 "UPDATE devices SET customer_id=%s, sensor_mode=%s, label=%s, revoked=0 "
                 "WHERE device_id='dev_legacy'",
-                (cid, mode, f"{customer} — Local"))
+                (cid, mode, f"{customer} - Local"))
         else:
             cur.execute(
                 "INSERT INTO devices (device_id, customer_id, device_key_hash, sensor_mode, label, revoked) "
                 "VALUES ('dev_legacy', %s, '!', %s, %s, 0)",
-                (cid, mode, f"{customer} — Local"))
+                (cid, mode, f"{customer} - Local"))
 
         admin_user = payload.get("admin_username") or "admin"
         admin_hash = payload.get("admin_password_hash")
@@ -246,12 +246,20 @@ def _seed_tenant(payload):
 
 
 # -------------------------------------------------------------- activation UI
+_STATIC_EXTS = (".png", ".ico", ".svg", ".jpg", ".jpeg", ".css", ".js", ".map",
+                 ".woff", ".woff2", ".ttf")
+
 _PAGE = """<!doctype html><html><head><meta charset=utf-8>
-<title>Thickness Monitor — Activation</title>
+<title>Thickness Monitor - Activation</title>
+<link rel="icon" type="image/png" href="/favicon-navy.png">
+<link rel="icon" href="/favicon.ico" sizes="any">
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
  body{font-family:system-ui,Arial,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;color:#1a2330;background:#f4f7fb}
  .card{background:#fff;border:1px solid #d7dee8;border-radius:14px;padding:26px;box-shadow:0 2px 8px #0001}
+ .brand{display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:18px;text-align:center}
+ .brand img{width:56px;height:56px}
+ .brand b{font-size:20px;font-weight:800;letter-spacing:0.6px;color:#16214e}
  h1{font-size:20px;margin:0 0 4px} .muted{color:#6b7787;font-size:13px}
  .mc{font-size:26px;font-weight:700;letter-spacing:2px;background:#eef3fb;border-radius:10px;
      padding:14px;text-align:center;margin:14px 0;user-select:all}
@@ -265,8 +273,9 @@ _PAGE = """<!doctype html><html><head><meta charset=utf-8>
  .row{margin:6px 0;font-size:14px} .row b{display:inline-block;min-width:110px}
 </style></head><body>
 <div class=card>
+ <div class=brand><img src="/rajdeep_logo.png" alt="Rajdeep"><b>RAJDEEP</b></div>
  <h1>Thickness Monitoring System</h1>
- <div class=muted>Rajdeep Analytics — Local Appliance</div>
+ <div class=muted>Rajdeep Analytics - Local Appliance</div>
  <div id=banner></div>
  <p class=muted style="margin-top:18px">Machine code (give this to Rajdeep Analytics to receive your license):</p>
  <div class=mc id=mc>…</div>
@@ -368,6 +377,11 @@ def register_license(app, data_dir, on_activated=None):
             return None
         path = request.path or "/"
         if path.startswith("/license") or path.startswith("/socket.io"):
+            return None
+        # Let static assets (logo, favicon, css, fonts...) through to the real
+        # file server below — otherwise the activation page's own branding
+        # would be silently swallowed and replaced by this HTML page.
+        if path.lower().endswith(_STATIC_EXTS):
             return None
         if request.method == "GET":
             return Response(_PAGE, mimetype="text/html")

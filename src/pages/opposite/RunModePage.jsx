@@ -167,8 +167,18 @@ export default function RunModePage({
   function drawThicknessGraph(canvas) {
     if (!canvas) return;
     const ctx   = canvas.getContext("2d");
-    const W     = canvas.width;
-    const H     = canvas.height;
+    // Render at the display resolution (CSS size x devicePixelRatio) so the
+    // graph is crisp instead of upscaled/blurry.
+    const dpr   = window.devicePixelRatio || 1;
+    const W     = canvas.clientWidth  || canvas.width;
+    const H     = canvas.clientHeight || canvas.height;
+    const pxW   = Math.round(W * dpr);
+    const pxH   = Math.round(H * dpr);
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width  = pxW;
+      canvas.height = pxH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const slice = [...rows].reverse().slice(0, WINDOW);
     const vals  = slice.map(r => parseFloat(r.thickness)).filter(n => !isNaN(n));
 
@@ -243,7 +253,7 @@ export default function RunModePage({
       else         ctx.lineTo(x, y);
     });
     ctx.strokeStyle = "#3B55A8";
-    ctx.lineWidth   = 1.5;
+    ctx.lineWidth   = 2.5;
     ctx.stroke();
 
     // Dots
@@ -252,7 +262,7 @@ export default function RunModePage({
         (isNaN(mn) || v >= mn) && (isNaN(mx) || v <= mx)
       );
       ctx.beginPath();
-      ctx.arc(xPos(i), yPos(v), 2, 0, Math.PI * 2);
+      ctx.arc(xPos(i), yPos(v), 3, 0, Math.PI * 2);
       ctx.fillStyle = inLimit ? "#3B55A8" : "#dc3232";
       ctx.fill();
     });
@@ -382,7 +392,7 @@ export default function RunModePage({
                         color: "var(--blue)",
                         border: "1px solid rgba(59,85,168,0.2)",
                       }}>
-                        Limits: {(Number(objectThickness) - Number(toleranceRange)).toFixed(3)} mm — {(Number(objectThickness) + Number(toleranceRange)).toFixed(3)} mm
+                        Limits: {(Number(objectThickness) - Number(toleranceRange)).toFixed(3)} mm - {(Number(objectThickness) + Number(toleranceRange)).toFixed(3)} mm
                       </div>
                     )}
                   </div>
@@ -650,7 +660,7 @@ export default function RunModePage({
             textAlign: "center", color: "var(--text-3)",
             fontFamily: "var(--mono)", fontSize: 13,
           }}>
-            No thickness data yet — configure the sensor gap and waiting for readings...
+            No thickness data yet - configure the sensor gap and waiting for readings...
           </div>
         ) : (
           <div className="table-wrap scroll-table" style={{ maxHeight: 400 }}>
