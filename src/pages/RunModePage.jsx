@@ -36,12 +36,9 @@ export default function RunModePage({
   const sensorKeys = { A: "a", B: "b", C: "c", R: "r" };
   const REFERENCE_ID = "B";
   const isReference = (sid) => Boolean(referenceMode) && sid === REFERENCE_ID;
-  // Reference mode shows the user's configured sensor name (set in sensor setup);
-  // other modes keep the original "Sensor A / B / ..." labels.
-  const sensorLabel = (sid) => {
-    if (referenceMode && SENSOR_CONFIGS[sid]?.name) return SENSOR_CONFIGS[sid].name;
-    return `Sensor ${sid}`;
-  };
+  // Always use the user's configured sensor name (set in sensor setup);
+  // fall back to the default "Sensor A / B / ..." labels only if unset.
+  const sensorLabel = (sid) => SENSOR_CONFIGS[sid]?.name || `Sensor ${sid}`;
 
   const { active: refLimitActive, min: refMinLimit, max: refMaxLimit } = referenceLimit;
 

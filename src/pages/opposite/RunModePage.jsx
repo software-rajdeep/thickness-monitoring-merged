@@ -39,6 +39,10 @@ export default function RunModePage({
   const autoGapActive = Boolean(thicknessState?.auto_gap_active);
   const isCalibrated = calibrationActive || Boolean(thicknessState?.calibration_completed) || gapDistance > 0;
 
+  // Always use the user's configured sensor name (set in sensor setup);
+  // fall back to the default "Sensor A / B / ..." labels only if unset.
+  const sensorLabel = (sid) => SENSOR_CONFIGS[sid]?.name || `Sensor ${sid}`;
+
   const canvasRef = useRef(null);
   const WINDOW = 100;
 
@@ -560,7 +564,7 @@ export default function RunModePage({
             <div key={sid} className="stat-card">
               <div className="stat-label">
                 <span className={dotClass} style={{ display: "inline-block" }} />
-                &nbsp;Sensor {sid} Distance
+                &nbsp;{sensorLabel(sid)} Distance
               </div>
               <div className="stat-val" style={{ fontSize: 28, color: online ? "var(--blue)" : "var(--text-3)" }}>
                 {value !== null ? formatValue(calcDistance(value)) : "-"}
@@ -669,8 +673,8 @@ export default function RunModePage({
                 <tr>
                   <th style={{ width: 50 }}>#</th>
                   <th>Timestamp</th>
-                  <th className="td-r">Sensor A Dist (mm)</th>
-                  <th className="td-r">Sensor B Dist (mm)</th>
+                  <th className="td-r">{sensorLabel("A")} Dist (mm)</th>
+                  <th className="td-r">{sensorLabel("B")} Dist (mm)</th>
                   <th className="td-r" style={{ color: "var(--green)" }}>Thickness (mm)</th>
                 </tr>
               </thead>

@@ -16,6 +16,37 @@ DB_USER = "rapl"
 DB_PASS = "rapl2026"
 
 
+def _sensor_names():
+    """Map sensor id -> user-configured name from sensor_network.json.
+    Falls back to "Sensor A / B / ..." when the file is missing or nameless."""
+    try:
+        import json
+        with open(os.path.join(BASE_DIR, "sensor_network.json")) as f:
+            cfg = json.load(f)
+        return {
+            str(sid).upper(): (v.get("name") or f"Sensor {str(sid).upper()}")
+            for sid, v in cfg.items()
+        }
+    except Exception:
+        return {}
+
+
+def _thickness_header(cols):
+    """CSV header row for SBS thickness exports, using configured sensor names."""
+    names = _sensor_names()
+    return ["id", "timestamp"] + [
+        f"{names.get(c.upper(), c)}_thickness" for c in cols
+    ] + ["error"]
+
+
+def _distance_header(cols):
+    """CSV header row for opposite-mode distance exports, using configured names."""
+    names = _sensor_names()
+    return ["id", "timestamp"] + [
+        f"{names.get(c.upper(), c)}_dist" for c in cols
+    ] + ["thickness"]
+
+
 def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TABLE_THICKNESS=None, DB_TABLE_THICKNESS_RAW=None,
                              require_auth=None):
     from flask import request, jsonify, Response, send_from_directory, g
@@ -70,7 +101,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness", "error"])
+            writer.writerow(_thickness_header(["A", "B", "C"]))
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -99,7 +130,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a_thickness", "sensor_b_thickness", "sensor_c_thickness", "error"])
+            writer.writerow(_thickness_header(["A", "B", "C"]))
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -133,7 +164,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
+            writer.writerow(_distance_header(["A", "B"]))
             writer.writerows(rows)
             output.seek(0)
             return Response(
@@ -163,7 +194,7 @@ def register_download_routes(app, DB_TABLE_FILTERED, DB_TABLE_UNFILTERED, DB_TAB
             conn.close()
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["id", "timestamp", "sensor_a", "sensor_b", "thickness"])
+            writer.writerow(_distance_header(["A", "B"]))
             writer.writerows(rows)                                                                                                                                                                                                                                                                  
             output.seek(0)
             return Response(

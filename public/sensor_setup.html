@@ -523,7 +523,6 @@
             card.id = id;
             card.innerHTML = `
                 <div class="sensor-card-title">
-                    Sensor ${label}
                     <button class="remove-btn" onclick="removeSensor('${id}')">&times;</button>
                 </div>
                 <div class="form-row">
@@ -546,10 +545,6 @@
         }
 
         // ── REFERENCE-MODE PAGE helpers ─────────────────────────────────────
-        function sensorTitle(label, isReference) {
-            return isReference ? 'Reference' : `Sensor ${label}`;
-        }
-
         function sensorDefaultName(label, isReference) {
             return isReference ? 'Reference' : `Sensor ${label}`;
         }
@@ -566,10 +561,8 @@
             const hasRef  = cards.some(isReferenceCard);
             let measureIndex = 0;
             cards.forEach(card => {
-                const title = card.querySelector('.sensor-card-title-label');
                 if (isReferenceCard(card)) {
                     card.dataset.label = REFERENCE_LABEL;
-                    if (title) title.textContent = 'Reference';
                 } else {
                     const pool = hasRef
                         ? MEASUREMENT_LABELS.filter(l => l !== REFERENCE_LABEL)
@@ -577,7 +570,6 @@
                     const label = pool[measureIndex] || `S${measureIndex + 1}`;
                     measureIndex++;
                     card.dataset.label = label;
-                    if (title) title.textContent = `Sensor ${label}`;
                 }
             });
         }
@@ -594,7 +586,6 @@
             card.dataset.reference = isReference ? '1' : '0';
             card.innerHTML = `
                 <div class="sensor-card-title">
-                    <span class="sensor-card-title-label">${sensorTitle(label, isReference)}</span>
                     <button class="remove-btn" onclick="removeSensor('${id}')">&times;</button>
                 </div>
                 <div class="form-row">
