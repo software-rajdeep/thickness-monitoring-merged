@@ -658,9 +658,10 @@
                 const config = await response.json();
                 let entries = Object.entries(config);
 
-                // Reference mode: keep ONLY A (measurement) and B (reference).
+                // Reference mode: keep ALL sensors except the legacy "R" label.
+                // The reference sensor is B; A, C, D, ... are measurement sensors.
                 if (REFERENCE_MODE) {
-                    entries = entries.filter(([label]) => label === 'A' || label === REFERENCE_LABEL);
+                    entries = entries.filter(([label]) => label.toUpperCase() !== 'R');
                 }
 
                 // Clear existing sensor cards

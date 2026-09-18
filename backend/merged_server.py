@@ -955,9 +955,11 @@ def get_server_config():
     if mode == "opposite":
         filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B"}}
     elif mode == "sbs-reference":
-        # Reference mode = one measurement sensor (A) + one reference sensor (B).
-        # The reference sensor only monitors the baseline; thickness comes from A.
-        filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B"}}
+        # Reference mode = one reference sensor (B) + any number of measurement
+        # sensors (A, C, D, ...). The reference sensor only monitors the baseline;
+        # thickness comes from each measurement sensor. "R" is a legacy plain-mode
+        # label and never appears in reference mode, so exclude it.
+        filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() != "R"}
     else:
         filtered_configs = {k: v for k, v in SENSOR_CONFIGS.items() if k.upper() in {"A", "B", "C"}}
 
